@@ -1,0 +1,11 @@
+id,name,category,description,price,image,featured,discount
+1,"Gà Rán Giòn Cay","Gà rán","Gà rán giòn rụm đậm vị cay nồng chuẩn vị KFC, lớp vỏ vàng ươm hấp dẫn.","45000","assets/images/chicken-1.jpg","true","10"
+2,"Gà Truyền Thống","Gà rán","Công thức 11 loại thảo mộc và gia vị bí truyền đậm đà, thịt gà mềm mọng nước.","45000","assets/images/chicken-2.jpg","false","0"
+3,"Combo Gà Rán 1 Người","Combo","1 Miếng Gà Rán + 1 Khoai Tây Chiên (Vừa) + 1 Pepsi Tươi mát lạnh.","95000","assets/images/combo-1.jpg","true","10"
+4,"Combo Gia Đình Thỏa Thích","Combo","6 Miếng Gà Rán + 2 Khoai Tây Chiên (Lớn) + 3 Pepsi Tươi giải nhiệt.","279000","assets/images/combo-2.jpg","true","10"
+5,"Burger Gà Zinger","Burger","Fillet gà giòn cay kẹp trong bánh mì mè thơm, xà lách tươi và sốt Mayo đậm đà.","65000","assets/images/burger-1.jpg","true","0"
+6,"Burger Gà Phô Mai","Burger","Fillet gà giòn phủ sốt phô mai cheddar tan chảy béo ngậy cực đỉnh.","59000","assets/images/burger-2.jpg","false","10"
+7,"Khoai Tây Chiên (L)","Món ăn kèm","Khoai tây chiên vàng giòn rụm, vỏ mỏng ruột mịn bùi béo.","35000","assets/images/side-1.jpg","false","0"
+8,"Bắp Cải Trộn Coleslaw","Món ăn kèm","Bắp cải tươi giòn ngọt trộn sốt béo thanh nhẹ giải ngấy hoàn hảo.","22000","assets/images/side-2.jpg","false","0"
+9,"Pepsi Tươi Cold","Đồ uống","Ly Pepsi tươi mát lạnh sảng khoái đánh tan cơn khát.","19000","assets/images/drink-1.jpg","false","0"
+10,"Trà Đào Băng Tuyết","Đồ uống","Trà đào thơm ngát thanh nhiệt kết hợp đá tuyết mát lạnh sảng khoái.","29000","assets/images/drink-2.jpg","false","0"

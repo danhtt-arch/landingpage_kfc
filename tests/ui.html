@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test giao diện - Module Giỏ hàng</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #f5f5f5; color: #222; margin: 0; padding: 24px; }
+    main { max-width: 900px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; }
+    h1 { color: #d71920; margin-top: 0; }
+    #summary { font-weight: 700; margin-bottom: 16px; }
+    .pass { color: #1a7f37; }
+    .fail { color: #d71920; font-weight: 700; }
+    li { margin: 4px 0; list-style: none; font-size: 0.9rem; }
+    .err { display: block; color: #d71920; margin-left: 20px; }
+    #frames { position: absolute; left: -99999px; top: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Test giao diện module Giỏ hàng</h1>
+    <p>Nạp <code>index.html</code> trong iframe và thao tác như người dùng. Phải chạy qua http (Live Server hoặc <code>python -m http.server</code>), không mở bằng file://.</p>
+    <p id="summary">Đang chạy...</p>
+    <ul id="list"></ul>
+  </main>
+  <div id="frames"></div>
+
+  <script>
+  (function () {
+    'use strict';
+    var results = [];
+    var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    var norm = function (s) { return String(s).replace(/\s/g, ' '); };
+
+    function assert(c, m) { if (!c) throw new Error(m || 'assert failed'); }
+    function eq(a, b, m) {
+      if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error((m ? m + ': ' : '') + 'expected ' + JSON.stringify(b) + ' but got ' + JSON.stringify(a));
+    }
+
+    /**
+     * Nạp trang trong iframe.
+     * opts: width, csv (chuỗi), csvMode ('404' | 'network'), blockStorage
+     */
+    function resetIdb() {
+      return new Promise(function (res) { var r = indexedDB.deleteDatabase('kfc-orders'); r.onsuccess = r.onerror = r.onblocked = function () { res(); }; });
+    }
+    async function waitFor(fn, ms) {
+      for (var i = 0; i < (ms || 6000) / 50; i++) { if (fn()) return true; await wait(50); }
+      return false;
+    }
+
+    async function load(opts) {
+      opts = opts || {};
+      if (!opts.keepData) await resetIdb(); // mỗi test bắt đầu với orders.db trống
+      var html = await (await fetch('../index.html', { cache: 'no-store' })).text();
+      // Mặc định gỡ module Thanh toán để các test của Giỏ hàng chạy độc lập; truyền payment:true để bật
+      if (!opts.payment) html = html.replace(/<script src="js\/payment\/[^"]*"><\/script>\s*/g, '');
+      var cfg = encodeURIComponent(JSON.stringify({ csv: opts.csv, csvMode: opts.csvMode, blockStorage: !!opts.blockStorage, wasmFail: !!opts.wasmFail, blockIdb: !!opts.blockIdb }));
+      // tắt transition/animation trong iframe để phép đo vị trí không phụ thuộc hiệu ứng đang chạy
+      var inject = '<base href="' + new URL('../', location.href).href + '">' +
+        '<style>*,*::before,*::after{transition:none!important;animation:none!important}</style>' +
+        '<script>(function(){' +
+        'var cfg=JSON.parse(decodeURIComponent("' + cfg + '"));' +
+        'if(cfg.blockStorage){try{Object.defineProperty(window,"localStorage",{get:function(){throw new Error("blocked")}})}catch(e){}}' +
+        'if(cfg.blockIdb){try{Object.defineProperty(window,"indexedDB",{get:function(){return undefined}})}catch(e){}}' +
+        'var of=window.fetch;window.fetch=function(u){if(cfg.wasmFail&&String(u).indexOf(".wasm")>-1)return Promise.resolve(new Response("nope",{status:404}));if(String(u).indexOf("menu.csv")>-1){' +
+        'if(cfg.csvMode==="404")return Promise.resolve(new Response("Not found",{status:404}));' +
+        'if(cfg.csvMode==="network")return Promise.reject(new TypeError("Failed to fetch"));' +
+        'if(typeof cfg.csv==="string")return Promise.resolve(new Response(cfg.csv,{status:200}));}' +
+        'return of.apply(this,arguments)};})();<\/script>';
+      var f = document.createElement('iframe');
+      f.style.cssText = 'width:' + (opts.width || 1024) + 'px;height:800px;border:0;';
+      f.srcdoc = html.replace('<head>', '<head>' + inject);
+      document.getElementById('frames').appendChild(f);
+      await new Promise(function (r) { f.onload = r; });
+      var d = f.contentDocument;
+      for (var i = 0; i < 40; i++) {
+        var status = d.getElementById('menu-status');
+        var errShown = status && status.style.display === 'block' && status.querySelector('.error-message');
+        if (d.querySelectorAll('#menu-grid .product-card').length > 0 || errShown) break;
+        await wait(100);
+      }
+      await wait(50);
+      return { f: f, w: f.contentWindow, d: d, $: function (id) { return d.getElementById(id); }, done: function () { f.remove(); } };
+    }
+
+    function rows(a) { return Array.prototype.slice.call(a.d.querySelectorAll('.cart-item')); }
+    function qty(a, i) { return rows(a)[i].querySelector('.qty__input').value; }
+    function key(a, k, opts) { a.d.dispatchEvent(new a.w.KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true, cancelable: true }, opts || {}))); }
+    function change(a, input, v) { input.value = v; input.dispatchEvent(new a.w.Event('change', { bubbles: true })); }
+    function gridCols(a) { return getComputedStyle0(a, a.$('menu-grid')).gridTemplateColumns.split(' ').length; }
+    function getComputedStyle0(a, el) { return a.w.getComputedStyle(el); }
+    function addBtns(a) { return a.d.querySelectorAll('#menu-grid .product-card__btn'); }
+
+    var tests = [];
+    function test(name, fn) { tests.push({ name: name, fn: fn }); }
+
+    // Dữ liệu cố định cho các test về giá: không phụ thuộc giá/giảm giá đang chỉnh trong data/menu.csv
+    var FIXTURE = [
+      'id,name,category,description,price,image,featured,discount',
+      '1,"Gà Giảm 20","Gà rán","d","45000","assets/images/chicken-1.jpg","true","20"',
+      '2,"Gà Thường","Gà rán","d","45000","assets/images/chicken-2.jpg","false","0"',
+      '3,"Combo Giảm 10","Combo","d","95000","assets/images/combo-1.jpg","true","10"'
+    ].join('\n');
+
+    // ---------- Responsive (DESIGN.md: 1440 / 1024 / 768 / 390 / 375) ----------
+    [[1440, 4], [1024, 4], [768, 2], [390, 1], [375, 1]].forEach(function (c) {
+      test('Responsive ' + c[0] + 'px: không tràn ngang, lưới ' + c[1] + ' cột, giỏ hàng vừa màn hình', async function () {
+        localStorage.clear();
+        var a = await load({ width: c[0] });
+        try {
+          eq(gridCols(a), c[1], 'số cột lưới');
+          assert(a.d.documentElement.scrollWidth <= a.w.innerWidth, 'tràn ngang: ' + a.d.documentElement.scrollWidth + ' > ' + a.w.innerWidth);
+          var toggle = a.$('cart-toggle').getBoundingClientRect();
+          assert(toggle.width >= 40 && toggle.height >= 40, 'nút giỏ quá nhỏ');
+          assert(toggle.right <= a.w.innerWidth && toggle.left >= 0, 'nút giỏ nằm ngoài màn hình');
+          eq(a.w.getComputedStyle(a.$('mobile-toggle')).display !== 'none', c[0] < 768, 'nút hamburger');
+          addBtns(a)[0].click(); addBtns(a)[3].click(); await wait(50);
+          a.w.KFCCart.open(); await wait(350);
+          var dr = a.$('cart-drawer').getBoundingClientRect();
+          assert(dr.width <= a.w.innerWidth + 1, 'drawer rộng hơn màn hình');
+          assert(dr.left >= -1 && dr.right <= a.w.innerWidth + 1, 'drawer bị cắt');
+          assert(dr.height >= a.w.innerHeight - 1, 'drawer không đủ chiều cao');
+          assert(a.d.documentElement.scrollWidth <= a.w.innerWidth, 'tràn ngang khi mở giỏ');
+          var checkout = a.$('cart-checkout').getBoundingClientRect();
+          assert(checkout.right <= a.w.innerWidth && checkout.left >= 0 && checkout.width > 150, 'nút Đặt hàng bị cắt');
+          if (c[0] < 768) eq(Math.round(dr.width), c[0], 'mobile: drawer phải full màn hình');
+        } finally { a.done(); }
+      });
+    });
+
+    // ---------- Phong cách theo DESIGN.md ----------
+    test('DESIGN.md: font Arial, màu chủ đạo #d71920, nền #f5f5f5, nút đặt hàng màu đỏ', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        var cs = function (el) { return a.w.getComputedStyle(el); };
+        assert(/^Arial, Helvetica, sans-serif$/.test(cs(a.d.body).fontFamily), 'font: ' + cs(a.d.body).fontFamily);
+        eq(cs(a.d.body).backgroundColor, 'rgb(245, 245, 245)');
+        eq(cs(a.$('cart-badge')).backgroundColor, 'rgb(215, 25, 32)');
+        eq(cs(a.$('cart-checkout')).backgroundColor, 'rgb(215, 25, 32)');
+        eq(cs(a.$('cart-drawer')).fontFamily.indexOf('Arial') === 0, true, 'font drawer');
+        var container = cs(a.d.querySelector('.container')).maxWidth;
+        eq(container, '1200px');
+      } finally { a.done(); }
+    });
+
+    // ---------- Luồng chính ----------
+    test('Thêm vào giỏ: badge, toast, lưu storage, nút có aria-label', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        eq(a.$('cart-badge').hidden, true);
+        eq(addBtns(a).length, 10);
+        assert(/Thêm .* vào giỏ hàng/.test(addBtns(a)[0].getAttribute('aria-label')), 'aria-label');
+        addBtns(a)[0].click(); addBtns(a)[0].click(); addBtns(a)[2].click(); await wait(50);
+        eq(a.$('cart-badge').textContent, '3');
+        assert(a.d.querySelector('.toast__msg').textContent.indexOf('Đã thêm') === 0, 'toast');
+        var saved = JSON.parse(localStorage.getItem('kfc_cart_v1'));
+        eq(saved.items.length, 2); eq(saved.items[0].qty, 2);
+        assert(/3 món/.test(a.$('cart-toggle').getAttribute('aria-label')), 'aria-label nút giỏ');
+      } finally { a.done(); }
+    });
+
+    test('Drawer: mở/đóng bằng nút, Esc, overlay; focus, inert, aria', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        var dr = a.$('cart-drawer');
+        a.$('cart-toggle').focus(); a.$('cart-toggle').click(); await wait(300);
+        assert(dr.classList.contains('is-open'), 'mở');
+        eq(dr.getAttribute('aria-hidden'), 'false'); eq(a.$('cart-toggle').getAttribute('aria-expanded'), 'true');
+        eq(dr.getAttribute('role'), 'dialog'); eq(dr.getAttribute('aria-modal'), 'true');
+        assert(a.d.activeElement === a.$('cart-close'), 'focus nút đóng');
+        assert(a.d.querySelector('main').hasAttribute('inert'), 'nền inert');
+        key(a, 'Escape'); await wait(300);
+        assert(!dr.classList.contains('is-open'), 'Esc đóng');
+        assert(!a.d.querySelector('main').hasAttribute('inert'), 'bỏ inert');
+        assert(a.d.activeElement === a.$('cart-toggle'), 'trả focus về nút giỏ');
+        a.$('cart-toggle').click(); await wait(100); a.$('cart-overlay').click(); await wait(100);
+        assert(!dr.classList.contains('is-open'), 'overlay đóng');
+        a.$('cart-toggle').click(); await wait(100); a.$('cart-close').click(); await wait(100);
+        assert(!dr.classList.contains('is-open'), 'nút X đóng');
+        eq(dr.getAttribute('aria-hidden'), 'true');
+      } finally { a.done(); }
+    });
+
+    test('Drawer: Tab và Shift+Tab xoay vòng trong giỏ (focus trap)', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[0].click(); await wait(30);
+        a.w.KFCCart.open(); await wait(300);
+        a.$('cart-clear').focus(); key(a, 'Tab'); await wait(10);
+        assert(a.d.activeElement === a.$('cart-close'), 'Tab ở cuối quay về đầu');
+        key(a, 'Tab', { shiftKey: true }); await wait(10);
+        assert(a.d.activeElement === a.$('cart-clear'), 'Shift+Tab ở đầu nhảy xuống cuối');
+      } finally { a.done(); }
+    });
+
+    test('Trạng thái rỗng: hiển thị thông báo, ẩn footer, nút Xem thực đơn đóng giỏ', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        a.w.KFCCart.open(); await wait(300);
+        assert(a.d.querySelector('.cart-empty'), 'empty state');
+        eq(a.$('cart-footer').hidden, true);
+        a.d.querySelector('.cart-empty [data-action=continue]').click(); await wait(300);
+        assert(!a.$('cart-drawer').classList.contains('is-open'), 'đóng giỏ');
+      } finally { a.done(); }
+    });
+
+    test('Số lượng: +, −, nhập số; giới hạn 99; nhập sai trả về số cũ', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[0].click(); a.w.KFCCart.open(); await wait(300);
+        var r = function () { return rows(a)[0]; };
+        r().querySelector('[data-action=inc]').click(); eq(qty(a, 0), '2');
+        r().querySelector('[data-action=inc]').click(); eq(qty(a, 0), '3');
+        r().querySelector('[data-action=dec]').click(); eq(qty(a, 0), '2');
+        change(a, r().querySelector('.qty__input'), '10'); eq(qty(a, 0), '10');
+        change(a, r().querySelector('.qty__input'), '500'); eq(qty(a, 0), '99');
+        assert(r().querySelector('[data-action=inc]').disabled, 'nút + phải khóa ở 99');
+        ['abc', '2.5', '', '-3e'].forEach(function (bad) {
+          change(a, r().querySelector('.qty__input'), bad);
+          eq(qty(a, 0), '99', 'nhập "' + bad + '"');
+        });
+        eq(rows(a).length, 1);
+      } finally { a.done(); }
+    });
+
+    test('Nhập số lượng 0 hoặc âm: xóa món', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[0].click(); addBtns(a)[2].click(); a.w.KFCCart.open(); await wait(300);
+        change(a, rows(a)[0].querySelector('.qty__input'), '0'); eq(rows(a).length, 1);
+        change(a, rows(a)[0].querySelector('.qty__input'), '-5'); eq(rows(a).length, 0);
+        assert(a.d.querySelector('.cart-empty'), 'về trạng thái rỗng');
+      } finally { a.done(); }
+    });
+
+    test('Xóa món + Hoàn tác khôi phục đúng số lượng', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[1].click(); addBtns(a)[1].click(); addBtns(a)[1].click(); a.w.KFCCart.open(); await wait(300);
+        rows(a)[0].querySelector('[data-action=remove]').click(); await wait(30);
+        eq(rows(a).length, 0);
+        var undo = Array.prototype.slice.call(a.d.querySelectorAll('.toast__action')).filter(function (b) { return b.textContent === 'Hoàn tác'; })[0];
+        assert(undo, 'có nút hoàn tác'); undo.click(); await wait(30);
+        eq(rows(a).length, 1); eq(qty(a, 0), '3');
+      } finally { a.done(); }
+    });
+
+    test('Giảm từ 1 về 0 xóa món', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[1].click(); a.w.KFCCart.open(); await wait(300);
+        rows(a)[0].querySelector('[data-action=dec]').click(); eq(rows(a).length, 0);
+      } finally { a.done(); }
+    });
+
+    test('Xóa toàn bộ: cần bấm 2 lần, tự hủy xác nhận, hoàn tác được', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[0].click(); addBtns(a)[2].click(); a.w.KFCCart.open(); await wait(300);
+        a.$('cart-clear').click(); await wait(10);
+        eq(rows(a).length, 2, 'lần 1 chưa xóa');
+        assert(a.$('cart-clear').classList.contains('is-confirming'), 'đang xác nhận');
+        a.$('cart-clear').click(); await wait(30);
+        eq(rows(a).length, 0); eq(a.$('cart-badge').hidden, true);
+        var undo = Array.prototype.slice.call(a.d.querySelectorAll('.toast__action')).filter(function (b) { return b.textContent === 'Hoàn tác'; }).pop();
+        undo.click(); await wait(30);
+        eq(rows(a).length, 2);
+      } finally { a.done(); }
+    });
+
+    test('Đóng giỏ khi đang chờ xác nhận xóa: trạng thái xác nhận được reset', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[0].click(); a.w.KFCCart.open(); await wait(300);
+        a.$('cart-clear').click(); a.w.KFCCart.close(); await wait(50);
+        assert(!a.$('cart-clear').classList.contains('is-confirming'), 'phải reset');
+        eq(a.$('cart-clear').textContent, 'Xóa giỏ hàng');
+      } finally { a.done(); }
+    });
+
+    test('Giảm giá: thẻ sản phẩm và giỏ hàng cùng một giá, tổng đúng', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        var card = a.d.querySelector('#menu-grid .product-card');
+        eq(card.querySelector('.product-card__sale').textContent, '-20%');
+        eq(norm(card.querySelector('.product-card__price').textContent), '36.000 ₫');
+        eq(norm(card.querySelector('.product-card__old-price').textContent), '45.000 ₫');
+        eq(card.querySelector('.product-card__old-price').tagName, 'DEL');
+        assert(card.querySelector('.sr-only').textContent.indexOf('Giảm 20%') === 0, 'chữ cho trình đọc màn hình');
+        var cards = a.d.querySelectorAll('#menu-grid .product-card');
+        eq(cards[1].querySelector('.product-card__sale'), null, 'món không giảm không có nhãn');
+        addBtns(a)[0].click(); addBtns(a)[0].click(); addBtns(a)[1].click(); a.w.KFCCart.open(); await wait(300);
+        eq(norm(rows(a)[0].querySelector('.cart-item__line').textContent), '72.000 ₫');
+        eq(norm(a.$('cart-subtotal').textContent), '135.000 ₫');
+        eq(a.$('cart-discount-row').hidden, false);
+        eq(norm(a.$('cart-discount').textContent), '−18.000 ₫');
+        eq(norm(a.$('cart-total').textContent), '117.000 ₫');
+        rows(a)[0].querySelector('[data-action=remove]').click();
+        eq(a.$('cart-discount-row').hidden, true, 'hết món giảm giá thì ẩn dòng Giảm giá');
+        eq(norm(a.$('cart-total').textContent), '45.000 ₫');
+      } finally { a.done(); }
+    });
+
+    test('Giữ giỏ sau khi tải lại trang', async function () {
+      localStorage.clear();
+      var a = await load();
+      addBtns(a)[0].click(); addBtns(a)[0].click(); addBtns(a)[2].click(); await wait(50); a.done();
+      var b = await load();
+      try {
+        eq(b.$('cart-badge').textContent, '3');
+        b.w.KFCCart.open(); await wait(300);
+        eq(rows(b).length, 2); eq(qty(b, 0), '2');
+      } finally { b.done(); }
+    });
+
+    test('Đồng bộ nhiều tab: thay đổi storage từ tab khác cập nhật badge', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        addBtns(a)[0].click(); await wait(50);
+        var other = JSON.parse(localStorage.getItem('kfc_cart_v1')); other.items[0].qty = 5;
+        localStorage.setItem('kfc_cart_v1', JSON.stringify(other));
+        a.w.dispatchEvent(new a.w.StorageEvent('storage', { key: 'kfc_cart_v1' })); await wait(50);
+        eq(a.$('cart-badge').textContent, '5');
+      } finally { a.done(); }
+    });
+
+    // ---------- Đặt hàng -> lưu SQLite (orders.db) ----------
+    function successShown(a) { return !!a.d.querySelector('.order-success'); }
+    function lastToast(a) { var t = a.d.querySelectorAll('.toast__msg'); return t.length ? t[t.length - 1].textContent : ''; }
+    function stubOrders(a, fn) { a.w.KFCOrders.placeOrder = fn; }
+    async function orderWith(a, idx) { // thêm món theo chỉ số rồi mở giỏ
+      idx.forEach(function (i) { addBtns(a)[i].click(); });
+      a.w.KFCCart.open(); await wait(300);
+    }
+
+    test('Đặt hàng thành công: lưu vào SQLite, xóa giỏ, hiện mã đơn, phát order:placed', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        await orderWith(a, [0, 0, 2]);
+        var checkout = null, placed = null;
+        a.w.addEventListener('cart:checkout', function (e) { checkout = e.detail; }, { once: true });
+        a.w.addEventListener('order:placed', function (e) { placed = e.detail.order; }, { once: true });
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }), 'không hiện màn hình thành công');
+        assert(checkout && checkout.items.length === 2 && checkout.totals.total === 157500, 'sự kiện cart:checkout');
+        var code = a.d.querySelector('.order-success__code').textContent;
+        assert(/^KFC-\d{8}-0001$/.test(code), 'mã đơn: ' + code);
+        eq(a.w.KFCCart.getState().items.length, 0, 'giỏ phải được xóa');
+        eq(JSON.parse(localStorage.getItem('kfc_cart_v1')).items.length, 0, 'giỏ lưu trữ phải rỗng');
+        eq(a.$('cart-badge').hidden, true);
+        eq(a.$('cart-footer').hidden, true);
+        eq(norm(a.d.querySelector('.order-success__row--total dd').textContent), '157.500 ₫');
+        eq(norm(a.d.querySelector('.order-success__row--discount dd').textContent), '−27.500 ₫');
+        assert(placed && placed.code === code, 'sự kiện order:placed');
+        assert(a.d.activeElement === a.d.querySelector('.order-success__title'), 'focus vào tiêu đề thành công');
+        eq(a.w.KFCOrders.storage.persistent, true);
+        assert(a.d.querySelector('.order-success__note').textContent.indexOf('đã được lưu') > -1, 'ghi chú');
+        eq(a.d.querySelectorAll('.toast').length, 0, 'toast cũ phải được dọn');
+        // dữ liệu thật trong SQLite
+        var orders = await a.w.KFCOrders.listOrders();
+        eq(orders.length, 1);
+        var o = orders[0];
+        eq([o.order_code, o.total_qty, o.subtotal, o.discount_total, o.total], [code, 3, 2 * 45000 + 95000, 2 * 9000 + 9500, 157500]);
+        eq(o.items.map(function (i) { return [i.product_id, i.product_name, i.original_price, i.discount_percent, i.unit_price, i.quantity, i.line_total]; }),
+          [['1', 'Gà Giảm 20', 45000, 20, 36000, 2, 72000], ['3', 'Combo Giảm 10', 95000, 10, 85500, 1, 85500]]);
+      } finally { a.done(); }
+    });
+
+    test('Sau khi thành công: đóng rồi mở lại giỏ -> giỏ rỗng; đơn tiếp theo có mã -0002', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        await orderWith(a, [0]);
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }));
+        a.d.querySelector('.order-success__continue').click(); await wait(350);
+        assert(!a.$('cart-drawer').classList.contains('is-open'), 'giỏ phải đóng');
+        a.w.KFCCart.open(); await wait(300);
+        assert(!successShown(a), 'không còn màn hình thành công');
+        assert(a.d.querySelector('.cart-empty'), 'giỏ rỗng');
+        key(a, 'Escape'); await wait(300);
+        await orderWith(a, [1]);
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }));
+        assert(/-0002$/.test(a.d.querySelector('.order-success__code').textContent), 'đơn thứ 2');
+        eq((await a.w.KFCOrders.listOrders()).length, 2);
+      } finally { a.done(); }
+    });
+
+    test('Đơn hàng còn nguyên sau khi tải lại trang (IndexedDB) và xuất ra được tệp SQLite hợp lệ', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      await orderWith(a, [0, 2]);
+      a.$('cart-checkout').click();
+      assert(await waitFor(function () { return successShown(a); }));
+      var code = a.d.querySelector('.order-success__code').textContent;
+      a.done();
+      var b = await load({ csv: FIXTURE, keepData: true });
+      try {
+        var orders = await b.w.KFCOrders.listOrders();
+        eq(orders.map(function (o) { return o.order_code; }), [code]);
+        var bytes = await b.w.KFCOrders.exportDb();
+        eq(String.fromCharCode.apply(null, Array.prototype.slice.call(bytes, 0, 15)), 'SQLite format 3');
+      } finally { b.done(); }
+    });
+
+    test('Module khác gọi preventDefault() trên cart:checkout: không lưu đơn, giỏ giữ nguyên', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        await orderWith(a, [0]);
+        a.w.addEventListener('cart:checkout', function (e) { e.preventDefault(); }, { once: true });
+        a.$('cart-checkout').click(); await wait(500);
+        assert(!successShown(a), 'không được hiện thành công');
+        eq(rows(a).length, 1, 'giỏ phải giữ nguyên');
+        eq((await a.w.KFCOrders.listOrders()).length, 0, 'không được lưu đơn');
+      } finally { a.done(); }
+    });
+
+    test('Bấm Đặt hàng liên tiếp nhiều lần: chỉ tạo đúng 1 đơn', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        await orderWith(a, [0, 2]);
+        a.$('cart-checkout').click(); a.$('cart-checkout').click(); a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }));
+        await wait(400);
+        eq((await a.w.KFCOrders.listOrders()).length, 1);
+      } finally { a.done(); }
+    });
+
+    test('Trong lúc đang lưu: nút báo "Đang lưu", giỏ bị khóa; xong thì giỏ bị xóa', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        await orderWith(a, [0]);
+        var release; var calls = 0;
+        stubOrders(a, function () { calls++; return new Promise(function (r) { release = function () { r({ id: 1, code: 'KFC-TEST-0001', totalQty: 1, subtotal: 45000, discountTotal: 9000, total: 36000, persistent: true }); }; }); });
+        a.$('cart-checkout').click(); await wait(50);
+        assert(a.$('cart-checkout').textContent.indexOf('Đang lưu') === 0, 'nhãn nút: ' + a.$('cart-checkout').textContent);
+        assert(a.$('cart-body').hasAttribute('inert') && a.$('cart-footer').hasAttribute('inert'), 'giỏ phải bị khóa');
+        eq(a.$('cart-drawer').getAttribute('aria-busy'), 'true');
+        a.$('cart-checkout').click(); eq(calls, 1, 'không được gửi lần 2 khi đang lưu');
+        eq(rows(a).length, 1, 'giỏ chưa bị xóa khi chưa lưu xong');
+        release(); await wait(100);
+        assert(successShown(a)); eq(a.$('cart-drawer').getAttribute('aria-busy'), 'false');
+        assert(!a.$('cart-body').hasAttribute('inert'), 'bỏ khóa');
+        eq(a.w.KFCCart.getState().items.length, 0);
+        eq(a.d.querySelector('.order-success__code').textContent, 'KFC-TEST-0001');
+      } finally { a.done(); }
+    });
+
+    test('Lưu thất bại: giữ nguyên giỏ, báo đúng nguyên nhân, mở khóa lại, không hiện thành công', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      var origError = a.w.console.error; a.w.console.error = function () {};
+      try {
+        await orderWith(a, [0, 2]);
+        var cases = [['db_corrupt', 'bị hỏng'], ['sqljs_load_failed', 'Live Server'], ['storage_save_failed', 'lưu trữ'], ['storage_load_failed', 'lưu trữ'],
+          ['schema_mismatch', 'cấu trúc'], ['invalid_item', 'Không thể đặt hàng'], ['total_mismatch', 'Không thể đặt hàng'], ['weird_code', 'Không thể đặt hàng lúc này']];
+        for (var i = 0; i < cases.length; i++) {
+          (function (code) { stubOrders(a, function () { var e = new Error('chi tiết ' + code); e.code = code; return Promise.reject(e); }); })(cases[i][0]);
+          a.$('cart-checkout').click(); await wait(80);
+          assert(lastToast(a).indexOf(cases[i][1]) > -1, cases[i][0] + ' -> "' + lastToast(a) + '"');
+          assert(lastToast(a).indexOf('Giỏ hàng của bạn vẫn được giữ lại') > -1, cases[i][0] + ': phải báo giỏ còn nguyên');
+          eq(rows(a).length, 2, cases[i][0] + ': giỏ phải còn nguyên');
+          assert(!successShown(a), cases[i][0]);
+          assert(!a.$('cart-body').hasAttribute('inert') && a.$('cart-checkout').textContent === 'Đặt hàng', cases[i][0] + ': phải mở khóa lại');
+        }
+        eq(a.w.KFCCart.getState().totals.total, 36000 + 85500);
+      } finally { a.w.console.error = origError; a.done(); }
+    });
+
+    test('Không tải được SQLite/WebAssembly (404): giữ giỏ, gợi ý mở bằng Live Server, không hỏng trang', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, wasmFail: true });
+      var origError = a.w.console.error; a.w.console.error = function () {};
+      try {
+        await orderWith(a, [0]);
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return lastToast(a).indexOf('Live Server') > -1; }), 'toast: ' + lastToast(a));
+        eq(rows(a).length, 1); assert(!successShown(a));
+        eq(a.w.KFCCart.getState().items.length, 1);
+      } finally { a.w.console.error = origError; a.done(); }
+    });
+
+    test('IndexedDB bị chặn: vẫn đặt hàng được nhưng cảnh báo chỉ lưu tạm, khuyên lưu file', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, blockIdb: true });
+      var origWarn = a.w.console.warn; a.w.console.warn = function () {};
+      try {
+        await orderWith(a, [0]);
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }));
+        eq(a.w.KFCOrders.storage.persistent, false);
+        var note = a.d.querySelector('.order-success__note');
+        assert(note.classList.contains('order-success__note--warn'), 'phải là cảnh báo');
+        assert(note.textContent.indexOf('Lưu file orders.db') > -1, 'phải hướng dẫn lưu file');
+        eq((await a.w.KFCOrders.listOrders()).length, 1, 'đơn vẫn có trong phiên');
+      } finally { a.w.console.warn = origWarn; a.done(); }
+    });
+
+    test('Nút "Lưu file orders.db" (không có hộp thoại lưu): tải về tệp tên orders.db đúng định dạng SQLite', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        a.w.showSaveFilePicker = undefined;
+        var blob = null, name = null, origCreate = a.w.URL.createObjectURL;
+        a.w.URL.createObjectURL = function (b) { blob = b; return origCreate.call(a.w.URL, b); };
+        a.w.HTMLAnchorElement.prototype.click = function () { name = this.download; };
+        await orderWith(a, [0, 2]);
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }));
+        a.d.querySelector('.order-success__save').click();
+        assert(await waitFor(function () { return blob !== null; }), 'chưa tải');
+        eq(name, 'orders.db');
+        var bytes = new Uint8Array(await blob.arrayBuffer());
+        eq(String.fromCharCode.apply(null, Array.prototype.slice.call(bytes, 0, 15)), 'SQLite format 3');
+        assert(bytes.length > 4096, 'tệp quá nhỏ: ' + bytes.length);
+        assert(await waitFor(function () { return lastToast(a).indexOf('Đã tải orders.db') > -1; }), 'toast: ' + lastToast(a));
+        assert(!a.d.querySelector('.order-success__save').disabled, 'nút phải được mở lại');
+      } finally { a.done(); }
+    });
+
+    test('Nút "Lưu file orders.db" (có hộp thoại lưu): ghi đúng nội dung; hủy hộp thoại thì im lặng', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      try {
+        var written = [], suggested = null, mode = 'ok';
+        a.w.showSaveFilePicker = async function (o) {
+          suggested = o.suggestedName;
+          if (mode === 'abort') { var e = new Error('cancelled'); e.name = 'AbortError'; throw e; }
+          return { createWritable: async function () { return { write: async function (b) { written.push(b); }, close: async function () {} }; } };
+        };
+        await orderWith(a, [0]);
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }));
+        a.d.querySelector('.order-success__save').click();
+        assert(await waitFor(function () { return written.length === 1; }), 'chưa ghi');
+        eq(suggested, 'orders.db');
+        var bytes = new Uint8Array(await written[0].arrayBuffer());
+        eq(String.fromCharCode.apply(null, Array.prototype.slice.call(bytes, 0, 15)), 'SQLite format 3');
+        assert(await waitFor(function () { return lastToast(a).indexOf('Đã lưu file orders.db') > -1; }), 'toast: ' + lastToast(a));
+        // hủy hộp thoại
+        mode = 'abort'; a.d.querySelectorAll('.toast').forEach(function (t) { t.remove(); });
+        a.d.querySelector('.order-success__save').click(); await wait(300);
+        eq(a.d.querySelectorAll('.toast').length, 0, 'hủy hộp thoại không được báo lỗi');
+        assert(!a.d.querySelector('.order-success__save').disabled);
+      } finally { a.done(); }
+    });
+
+    test('Hai tab đặt hàng cùng lúc: không mất đơn, mã đơn không trùng', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE });
+      var b = await load({ csv: FIXTURE, keepData: true });
+      try {
+        await orderWith(a, [0]); await orderWith(b, [2]);
+        a.$('cart-checkout').click(); b.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a) && successShown(b); }), 'cả hai tab phải thành công');
+        var ca = a.d.querySelector('.order-success__code').textContent, cb = b.d.querySelector('.order-success__code').textContent;
+        assert(ca !== cb, 'mã trùng: ' + ca);
+        var list = await a.w.KFCOrders.listOrders();
+        eq(list.map(function (o) { return o.order_code; }).sort(), [ca, cb].sort());
+        // hai tab dùng chung một giỏ (đồng bộ qua localStorage) nên mỗi đơn có thể chứa cả hai món; chỉ cần mỗi đơn nhất quán
+        list.forEach(function (o) {
+          assert(o.items.length >= 1, 'đơn không có dòng hàng');
+          eq(o.items.reduce(function (s, i) { return s + i.line_total; }, 0), o.total, 'tổng đơn ' + o.order_code);
+        });
+      } finally { a.done(); b.done(); }
+    });
+
+    test('Toast: gộp trùng, tối đa 3, đặt phía trên tổng tiền khi giỏ mở', async function () {
+      localStorage.clear();
+      var a = await load();
+      try {
+        for (var i = 0; i < 5; i++) addBtns(a)[0].click();
+        await wait(30);
+        eq(a.d.querySelectorAll('.toast').length, 1, 'toast trùng nội dung phải gộp');
+        addBtns(a)[1].click(); addBtns(a)[2].click(); addBtns(a)[3].click(); addBtns(a)[4].click(); await wait(30);
+        assert(a.d.querySelectorAll('.toast').length <= 3, 'tối đa 3 toast');
+        a.w.KFCCart.open(); await wait(300);
+        rows(a)[0].querySelector('[data-action=remove]').click(); await wait(100);
+        var t = a.d.querySelector('.toast').getBoundingClientRect(), f = a.$('cart-footer').getBoundingClientRect();
+        assert(t.bottom <= f.top + 1, 'toast che phần tổng tiền: ' + t.bottom + ' > ' + f.top);
+      } finally { a.done(); }
+    });
+
+    // ======================================================================
+    // MODULE 2: THANH TOÁN
+    // ======================================================================
+    var VALID = { name: 'Nguyễn Văn An', phone: '0912 345 678', address: '12 Nguyễn Huệ, Quận 1, TP.HCM', note: 'Ít cay' };
+    var PAYLOAD = { csv: FIXTURE, payment: true };
+
+    function dlg(a) { return a.$('checkout'); }
+    function co(a, k) { return a.d.getElementById('co-' + k); }
+    function setVal(a, k, v) { var i = co(a, k); i.value = v; i.dispatchEvent(new a.w.Event('input', { bubbles: true })); }
+    function blurField(a, k) { co(a, k).dispatchEvent(new a.w.Event('blur')); }
+    function fill(a, v) { Object.keys(v).forEach(function (k) { setVal(a, k, v[k]); }); }
+    function errOf(a, k) { var e = a.d.getElementById('co-' + k + '-error'); return e && !e.hidden ? e.textContent : ''; }
+    function submitBtn(a) { return a.d.querySelector('.co-submit'); }
+    function alertText(a) { var e = a.d.querySelector('.co-alert'); return e && !e.hidden ? e.textContent : ''; }
+    function onSuccessScreen(a) { return !!a.d.querySelector('.co-success'); }
+    async function openCheckout(a, idx) {
+      idx.forEach(function (i) { addBtns(a)[i].click(); });
+      a.w.KFCCart.open(); await wait(300);
+      a.$('cart-checkout').click(); await wait(100);
+    }
+    async function placeVia(a, method) {
+      fill(a, VALID);
+      if (method) a.d.querySelector('input[name=payment-method][value=' + method + ']').click();
+      submitBtn(a).click();
+      return waitFor(function () { return onSuccessScreen(a); });
+    }
+    function bytesHead(b) { return String.fromCharCode.apply(null, Array.prototype.slice.call(b, 0, 15)); }
+
+    test('Thanh toán: bấm Đặt hàng mở hộp thoại, chặn luồng mặc định của giỏ, đóng giỏ, giữ nguyên giỏ', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0, 0, 2]);
+        assert(a.w.KFCPayment.isOpen(), 'hộp thoại phải mở');
+        eq([dlg(a).getAttribute('role'), dlg(a).getAttribute('aria-modal'), dlg(a).getAttribute('aria-hidden')], ['dialog', 'true', 'false']);
+        assert(!a.$('cart-drawer').classList.contains('is-open'), 'giỏ phải đóng');
+        assert(!a.d.querySelector('.order-success'), 'không được hiện màn hình thành công của giỏ');
+        eq(a.w.KFCCart.getState().items.length, 2, 'giỏ giữ nguyên');
+        eq((await a.w.KFCOrders.listOrders()).length, 0, 'chưa được lưu đơn');
+        assert(a.d.activeElement === co(a, 'name'), 'focus vào ô họ tên: ' + a.d.activeElement.id);
+        assert(a.d.querySelector('main').hasAttribute('inert'), 'nền bị khóa');
+        eq(a.$('checkout-title').textContent, 'Thanh toán');
+        var names = Array.prototype.map.call(a.d.querySelectorAll('.co-item__name'), function (n) { return n.textContent; });
+        eq(names, ['Gà Giảm 20', 'Combo Giảm 10']);
+        eq(norm(a.d.querySelector('.co-row--total dd').textContent), '157.500 ₫');
+        eq(norm(a.d.querySelector('.co-row--discount dd').textContent), '−27.500 ₫');
+        eq(a.d.querySelector('input[name=payment-method]:checked').value, 'cod', 'mặc định COD');
+      } finally { a.done(); }
+    });
+
+    test('Thanh toán: nhãn gắn đúng ô nhập, trường bắt buộc, kiểu bàn phím, autocomplete', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        ['name', 'phone', 'address', 'note'].forEach(function (k) { eq(co(a, k).labels.length, 1, 'nhãn của ' + k); });
+        eq(['name', 'phone', 'address'].map(function (k) { return co(a, k).required; }), [true, true, true]);
+        eq(co(a, 'note').required, false);
+        eq(co(a, 'phone').type, 'tel'); eq(co(a, 'phone').getAttribute('inputmode'), 'tel');
+        eq([co(a, 'name').autocomplete, co(a, 'phone').autocomplete], ['name', 'tel']);
+        assert(parseFloat(a.w.getComputedStyle(co(a, 'name')).fontSize) >= 16, 'cỡ chữ ô nhập >= 16px');
+        eq(a.d.querySelectorAll('input[name=payment-method]').length, 2);
+      } finally { a.done(); }
+    });
+
+    test('Gửi form rỗng: báo lỗi 3 ô bắt buộc, aria-invalid, focus ô lỗi đầu tiên, không đặt đơn', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        var called = 0; a.w.KFCOrders.placeOrder = function () { called++; return Promise.reject(new Error('không được gọi')); };
+        submitBtn(a).click(); await wait(100);
+        eq(called, 0);
+        ['name', 'phone', 'address'].forEach(function (k) {
+          assert(errOf(a, k).length > 5, 'thiếu thông báo lỗi ' + k);
+          eq(co(a, k).getAttribute('aria-invalid'), 'true', k);
+          eq(co(a, k).getAttribute('aria-describedby'), 'co-' + k + '-error', k);
+        });
+        eq(errOf(a, 'note'), '', 'ghi chú không bắt buộc');
+        assert(alertText(a).indexOf('3 thông tin') > -1, 'alert: ' + alertText(a));
+        assert(a.d.activeElement === co(a, 'name'), 'focus ô lỗi đầu tiên');
+        assert(!onSuccessScreen(a));
+      } finally { a.done(); }
+    });
+
+    test('Kiểm tra từng ô khi rời ô và tự bỏ lỗi khi sửa đúng; chuẩn hóa số điện thoại', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        eq(errOf(a, 'phone'), '', 'chưa chạm vào thì chưa báo lỗi');
+        setVal(a, 'phone', '123'); eq(errOf(a, 'phone'), '', 'đang gõ lần đầu chưa báo');
+        blurField(a, 'phone');
+        assert(errOf(a, 'phone').indexOf('0912345678') > -1, 'báo lỗi khi rời ô');
+        setVal(a, 'phone', '+84 912.345.678');
+        eq(errOf(a, 'phone'), '', 'sửa đúng thì bỏ lỗi ngay');
+        blurField(a, 'phone');
+        eq(co(a, 'phone').value, '0912345678', 'hiển thị số đã chuẩn hóa');
+        eq(co(a, 'phone').hasAttribute('aria-invalid'), false);
+        setVal(a, 'name', 'An123'); blurField(a, 'name');
+        assert(errOf(a, 'name').length > 0, 'tên có số');
+        setVal(a, 'address', 'ngắn'); blurField(a, 'address');
+        assert(errOf(a, 'address').indexOf('quá ngắn') > -1, 'địa chỉ ngắn');
+      } finally { a.done(); }
+    });
+
+    test('Số điện thoại: các định dạng hợp lệ được nhận, định dạng sai bị từ chối', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        ['0912345678', '0912 345 678', '+84912345678', '84912345678', '0312-345-678'].forEach(function (p) {
+          setVal(a, 'phone', p); blurField(a, 'phone'); eq(errOf(a, 'phone'), '', 'phải hợp lệ: ' + p);
+        });
+        ['', '091234567', '0212345678', 'abc', '09123456789', '+8491234'].forEach(function (p) {
+          setVal(a, 'phone', p); blurField(a, 'phone'); assert(errOf(a, 'phone') !== '', 'phải báo lỗi: ' + JSON.stringify(p));
+        });
+      } finally { a.done(); }
+    });
+
+    test('Thanh toán COD: đặt thành công, lưu SQLite kèm thông tin khách, xóa giỏ, phát order:placed', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0, 0, 2]);
+        var placed = null; a.w.addEventListener('order:placed', function (e) { placed = e.detail; }, { once: true });
+        assert(await placeVia(a, 'cod'), 'không hiện màn hình thành công');
+        var code = a.d.querySelector('.co-success__code').textContent;
+        assert(/^KFC-\d{8}-0001$/.test(code), 'mã đơn: ' + code);
+        eq(a.d.querySelector('.co-success__title').textContent, 'Đặt hàng thành công!');
+        assert(a.d.activeElement === a.d.querySelector('.co-success__title'), 'focus vào tiêu đề');
+        eq(a.w.KFCCart.getState().items.length, 0, 'giỏ phải xóa'); eq(a.$('cart-badge').hidden, true);
+        var info = a.d.querySelector('.co-info').textContent;
+        ['Nguyễn Văn An', '0912345678', '12 Nguyễn Huệ, Quận 1, TP.HCM', 'Ít cay'].forEach(function (t) { assert(info.indexOf(t) > -1, 'thiếu: ' + t); });
+        assert(a.d.querySelector('.co-pay-note').textContent.indexOf('157.500') > -1, 'tiền phải trả khi nhận hàng');
+        eq(a.d.querySelectorAll('.co-bank').length, 0, 'COD không có thông tin chuyển khoản');
+        assert(placed && placed.order.code === code && placed.instructions.type === 'cod', 'order:placed');
+        assert(a.d.querySelector('.co-saved').textContent.indexOf('đã được lưu') > -1);
+        var o = (await a.w.KFCOrders.listOrders())[0];
+        eq([o.order_code, o.customer_name, o.customer_phone, o.customer_address, o.customer_note, o.payment_method, o.payment_status, o.total],
+          [code, 'Nguyễn Văn An', '0912345678', '12 Nguyễn Huệ, Quận 1, TP.HCM', 'Ít cay', 'cod', 'unpaid', 157500]);
+        eq(o.items.length, 2);
+      } finally { a.done(); }
+    });
+
+    test('Chuyển khoản: hiện thông tin ngân hàng, số tiền, nội dung = mã đơn, cảnh báo demo; nút Chép hoạt động; lưu payment_status', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        var copied = [];
+        Object.defineProperty(a.w.navigator, 'clipboard', { value: { writeText: function (t) { copied.push(t); return Promise.resolve(); } }, configurable: true });
+        await openCheckout(a, [0, 2]);
+        assert(await placeVia(a, 'bank_transfer'));
+        var code = a.d.querySelector('.co-success__code').textContent;
+        var rows = {};
+        Array.prototype.forEach.call(a.d.querySelectorAll('.co-bank__row'), function (r) { rows[r.querySelector('dt').textContent] = r.querySelector('.co-bank__value').textContent; });
+        eq(rows['Nội dung'], code); eq(norm(rows['Số tiền']), '121.500 ₫');
+        eq(rows['Số tài khoản'], a.w.KFCPaymentConfig.bank.accountNumber);
+        assert(a.d.querySelector('.co-pay-note--warn').textContent.indexOf('DEMO') > -1, 'cảnh báo demo');
+        var btns = a.d.querySelectorAll('.co-copy');
+        eq(btns.length, 3, 'chép số tài khoản, số tiền, nội dung');
+        btns[2].click(); await wait(50);
+        eq(copied, [code]); eq(btns[2].textContent, 'Đã chép');
+        btns[1].click(); await wait(50); eq(copied[1], '121500', 'chép số tiền dạng số thuần');
+        var o = (await a.w.KFCOrders.listOrders())[0];
+        eq([o.payment_method, o.payment_status], ['bank_transfer', 'awaiting_transfer']);
+      } finally { a.done(); }
+    });
+
+    test('Thông tin khách được chuẩn hóa trước khi lưu (tên nhiều khoảng trắng, +84, địa chỉ xuống dòng)', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        fill(a, { name: '  Trần   Thị  Bích ', phone: '+84 912.345.678', address: '5 Lê Lợi,\nQuận 1, TP.HCM', note: '  ít cay  ' });
+        submitBtn(a).click();
+        assert(await waitFor(function () { return onSuccessScreen(a); }));
+        var o = (await a.w.KFCOrders.listOrders())[0];
+        eq([o.customer_name, o.customer_phone, o.customer_address, o.customer_note], ['Trần Thị Bích', '0912345678', '5 Lê Lợi, Quận 1, TP.HCM', 'ít cay']);
+      } finally { a.done(); }
+    });
+
+    test('XSS: HTML trong địa chỉ/ghi chú chỉ hiển thị là chữ; tên chứa thẻ HTML bị từ chối', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        fill(a, { name: '<b>An</b>', phone: VALID.phone, address: VALID.address });
+        submitBtn(a).click(); await wait(100);
+        assert(errOf(a, 'name') !== '', 'tên chứa thẻ HTML phải bị từ chối');
+        assert(!onSuccessScreen(a));
+        var evilAddr = '12 <img src=x onerror="window.__xss=1"> Lê Lợi Quận 1';
+        fill(a, { name: 'Nguyễn Văn An', address: evilAddr, note: '<script>window.__xss=2<\/script>' });
+        submitBtn(a).click();
+        assert(await waitFor(function () { return onSuccessScreen(a); }));
+        await wait(200);
+        eq(a.w.__xss, undefined, 'script đã chạy');
+        eq(a.d.querySelectorAll('img[src="x"]').length, 0);
+        eq(a.d.querySelectorAll('.co-success script').length, 0);
+        assert(a.d.querySelector('.co-info').textContent.indexOf(evilAddr) > -1, 'địa chỉ phải hiện nguyên văn');
+      } finally { a.done(); }
+    });
+
+    test('Đang xử lý: nút "Đang xử lý", form bị khóa, Esc/X/overlay không đóng; xong thì hiện thành công', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        var release, calls = 0;
+        a.w.KFCOrders.placeOrder = function (state, meta) { calls++; return new Promise(function (r) {
+          release = function () { r({ id: 1, code: 'KFC-TEST-0001', createdAt: 'x', totalQty: 1, subtotal: 45000, discountTotal: 9000, total: 36000, items: [{ productName: 'Gà Giảm 20', quantity: 1, lineTotal: 36000 }], customer: meta.customer, payment: { method: meta.payment.method, status: 'unpaid' }, persistent: true }); }; }); };
+        fill(a, VALID); submitBtn(a).click(); await wait(80);
+        assert(submitBtn(a).textContent.indexOf('Đang xử lý') === 0, 'nhãn: ' + submitBtn(a).textContent);
+        assert(submitBtn(a).disabled, 'nút phải khóa');
+        assert(Array.prototype.every.call(a.d.querySelectorAll('.co-form fieldset'), function (f) { return f.disabled; }), 'form phải khóa');
+        eq(dlg(a).getAttribute('aria-busy'), 'true');
+        assert(a.$('checkout-close').disabled, 'nút X phải khóa');
+        key(a, 'Escape'); a.$('checkout-overlay').click(); await wait(50);
+        assert(a.w.KFCPayment.isOpen(), 'không được đóng khi đang xử lý');
+        eq(calls, 1); eq(a.w.KFCCart.getState().items.length, 1, 'giỏ chưa bị xóa khi chưa lưu xong');
+        release(); await wait(150);
+        assert(onSuccessScreen(a)); eq(dlg(a).getAttribute('aria-busy'), 'false'); assert(!a.$('checkout-close').disabled);
+        eq(a.w.KFCCart.getState().items.length, 0);
+      } finally { a.done(); }
+    });
+
+    test('Lưu thất bại: giữ form và giỏ, báo đúng nguyên nhân, mở khóa lại, không mất dữ liệu đã nhập', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      var origError = a.w.console.error; a.w.console.error = function () {};
+      try {
+        await openCheckout(a, [0, 2]);
+        fill(a, VALID);
+        var cases = [['db_corrupt', 'bị hỏng'], ['sqljs_load_failed', 'Live Server'], ['storage_save_failed', 'lưu trữ'], ['schema_mismatch', 'cấu trúc'], ['db_write_failed', 'Không thể đặt hàng lúc này'], ['weird', 'Không thể đặt hàng lúc này']];
+        for (var i = 0; i < cases.length; i++) {
+          (function (code) { a.w.KFCOrders.placeOrder = function () { var e = new Error('x'); e.code = code; return Promise.reject(e); }; })(cases[i][0]);
+          submitBtn(a).click(); await wait(100);
+          assert(alertText(a).indexOf(cases[i][1]) > -1, cases[i][0] + ' -> "' + alertText(a) + '"');
+          assert(alertText(a).indexOf('Giỏ hàng của bạn vẫn được giữ lại') > -1, cases[i][0]);
+          assert(!onSuccessScreen(a) && a.w.KFCPayment.isOpen(), cases[i][0]);
+          eq(a.w.KFCCart.getState().items.length, 2, cases[i][0] + ': giỏ');
+          eq(co(a, 'name').value, 'Nguyễn Văn An', 'dữ liệu nhập phải còn');
+          assert(!submitBtn(a).disabled && submitBtn(a).textContent === 'Xác nhận đặt hàng', 'phải mở khóa');
+        }
+      } finally { a.w.console.error = origError; a.done(); }
+    });
+
+    test('Giỏ đổi khi đang thanh toán (tab khác thêm món): tóm tắt tự cập nhật + cảnh báo; đơn dùng giỏ mới', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        eq(a.d.querySelectorAll('.co-item').length, 1);
+        a.w.KFCCart.add({ id: '2', name: 'Gà Thường', category: 'Gà rán', price: 45000, discount: 0 }, 2); await wait(100);
+        eq(a.d.querySelectorAll('.co-item').length, 2, 'tóm tắt phải cập nhật');
+        assert(alertText(a).indexOf('Giỏ hàng vừa thay đổi') > -1, 'cảnh báo: ' + alertText(a));
+        eq(norm(a.d.querySelector('.co-row--total dd').textContent), '126.000 ₫');
+        assert(await placeVia(a, 'cod'));
+        var o = (await a.w.KFCOrders.listOrders())[0];
+        eq([o.total, o.items.length, o.total_qty], [126000, 2, 3]);
+      } finally { a.done(); }
+    });
+
+    test('Giỏ bị xóa khi đang thanh toán (tab khác): chuyển sang trạng thái giỏ trống, không thể đặt', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        a.w.KFCCart.clear(); await wait(100);
+        assert(a.d.querySelector('.co-empty'), 'phải hiện giỏ trống');
+        eq(a.d.querySelector('.co-submit'), null, 'không còn nút đặt hàng');
+        a.d.querySelector('.co-empty .btn').click(); await wait(50);
+        assert(!a.w.KFCPayment.isOpen(), 'nút Xem thực đơn phải đóng hộp thoại');
+      } finally { a.done(); }
+    });
+
+    test('Mở Thanh toán khi giỏ rỗng: hiện thông báo giỏ trống', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        a.w.KFCPayment.open(); await wait(50);
+        assert(a.d.querySelector('.co-empty'), 'giỏ trống');
+        assert(a.d.activeElement === a.d.querySelector('.co-empty__title'), 'focus vào tiêu đề');
+        key(a, 'Escape'); await wait(50);
+        assert(!a.w.KFCPayment.isOpen());
+      } finally { a.done(); }
+    });
+
+    test('Đóng/mở: Esc, nút X, overlay; trả focus; giữ dữ liệu đã nhập; "Chỉnh sửa giỏ hàng" mở lại giỏ', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        addBtns(a)[0].click(); a.w.KFCCart.open(); await wait(300);
+        a.$('cart-checkout').focus(); a.$('cart-checkout').click(); await wait(100);
+        fill(a, { name: 'Lê Hoàng', phone: '0987654321' });
+        a.d.querySelector('input[name=payment-method][value=bank_transfer]').click();
+        key(a, 'Escape'); await wait(50);
+        assert(!a.w.KFCPayment.isOpen(), 'Esc đóng'); assert(!a.d.querySelector('main').hasAttribute('inert'), 'bỏ khóa nền');
+        eq(dlg(a).getAttribute('aria-hidden'), 'true');
+        a.w.KFCCart.open(); await wait(300); a.$('cart-checkout').click(); await wait(100);
+        eq([co(a, 'name').value, co(a, 'phone').value], ['Lê Hoàng', '0987654321']);
+        eq(a.d.querySelector('input[name=payment-method]:checked').value, 'bank_transfer', 'giữ phương thức đã chọn');
+        a.$('checkout-close').click(); await wait(50); assert(!a.w.KFCPayment.isOpen(), 'nút X đóng');
+        a.w.KFCCart.open(); await wait(300); a.$('cart-checkout').click(); await wait(100);
+        a.$('checkout-overlay').click(); await wait(50); assert(!a.w.KFCPayment.isOpen(), 'overlay đóng');
+        a.w.KFCCart.open(); await wait(300); a.$('cart-checkout').click(); await wait(100);
+        a.d.querySelector('.co-edit-cart').click(); await wait(300);
+        assert(!a.w.KFCPayment.isOpen() && a.$('cart-drawer').classList.contains('is-open'), 'phải mở lại giỏ');
+        eq(a.w.KFCCart.getState().items.length, 1);
+      } finally { a.done(); }
+    });
+
+    test('Bàn phím: Tab/Shift+Tab xoay vòng trong hộp thoại (focus trap)', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        a.d.querySelector('.co-edit-cart').focus(); key(a, 'Tab'); await wait(10);
+        assert(a.d.activeElement === a.$('checkout-close'), 'Tab ở cuối quay về nút đóng: ' + (a.d.activeElement.id || a.d.activeElement.className));
+        key(a, 'Tab', { shiftKey: true }); await wait(10);
+        assert(a.d.activeElement === a.d.querySelector('.co-edit-cart'), 'Shift+Tab ở đầu nhảy xuống cuối');
+      } finally { a.done(); }
+    });
+
+    test('Sau khi thành công rồi đóng: lần thanh toán sau có form sạch; đơn trước vẫn nguyên; mã -0002', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        assert(await placeVia(a, 'cod'));
+        a.d.querySelector('.co-continue').click(); await wait(100);
+        assert(!a.w.KFCPayment.isOpen(), 'đóng hộp thoại');
+        await openCheckout(a, [2]);
+        eq([co(a, 'name').value, co(a, 'phone').value, co(a, 'address').value], ['', '', ''], 'form phải sạch');
+        assert(await placeVia(a, 'bank_transfer'));
+        assert(/-0002$/.test(a.d.querySelector('.co-success__code').textContent));
+        var list = await a.w.KFCOrders.listOrders();
+        eq(list.map(function (o) { return o.payment_method; }), ['bank_transfer', 'cod']);
+        eq(list.map(function (o) { return o.total; }), [85500, 36000]);
+      } finally { a.done(); }
+    });
+
+    test('Nút "Lưu file orders.db" ở màn hình thành công: ghi đúng tệp SQLite; hủy hộp thoại thì im lặng', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        var written = [], mode = 'ok', suggested = null;
+        a.w.showSaveFilePicker = async function (o) {
+          suggested = o.suggestedName;
+          if (mode === 'abort') { var e = new Error('x'); e.name = 'AbortError'; throw e; }
+          return { createWritable: async function () { return { write: async function (b) { written.push(b); }, close: async function () {} }; } };
+        };
+        await openCheckout(a, [0]);
+        assert(await placeVia(a, 'cod'));
+        a.d.querySelector('.co-save').click();
+        assert(await waitFor(function () { return written.length === 1; }), 'chưa ghi');
+        eq(suggested, 'orders.db');
+        var bytes = new Uint8Array(await written[0].arrayBuffer());
+        eq(bytesHead(bytes), 'SQLite format 3');
+        assert(await waitFor(function () { return a.d.querySelector('.co-status').textContent.indexOf('Đã lưu') > -1; }));
+        mode = 'abort'; a.d.querySelector('.co-status').textContent = '';
+        a.d.querySelector('.co-save').click(); await wait(300);
+        eq(a.d.querySelector('.co-status').textContent, '', 'hủy không được báo lỗi');
+        assert(!a.d.querySelector('.co-save').disabled);
+      } finally { a.done(); }
+    });
+
+    test('IndexedDB bị chặn: vẫn đặt được, cảnh báo chỉ lưu tạm và nhắc lưu file', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, payment: true, blockIdb: true });
+      var origWarn = a.w.console.warn; a.w.console.warn = function () {};
+      try {
+        await openCheckout(a, [0]);
+        assert(await placeVia(a, 'cod'));
+        var note = a.d.querySelector('.co-saved');
+        assert(note.classList.contains('co-saved--warn') && note.textContent.indexOf('Lưu file orders.db') > -1, note.textContent);
+      } finally { a.w.console.warn = origWarn; a.done(); }
+    });
+
+    test('Không tải được SQLite/WebAssembly: báo Live Server, giữ form và giỏ', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, payment: true, wasmFail: true });
+      var origError = a.w.console.error; a.w.console.error = function () {};
+      try {
+        await openCheckout(a, [0]);
+        fill(a, VALID); submitBtn(a).click();
+        assert(await waitFor(function () { return alertText(a).indexOf('Live Server') > -1; }), 'alert: ' + alertText(a));
+        eq(a.w.KFCCart.getState().items.length, 1); eq(co(a, 'name').value, 'Nguyễn Văn An'); assert(!onSuccessScreen(a));
+      } finally { a.w.console.error = origError; a.done(); }
+    });
+
+    test('Module Giỏ hàng vẫn hoạt động độc lập khi không có module Thanh toán (tự lưu đơn như trước)', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE }); // không bật payment
+      try {
+        eq(a.w.KFCPayment, undefined);
+        await orderWith(a, [0]);
+        a.$('cart-checkout').click();
+        assert(await waitFor(function () { return successShown(a); }), 'giỏ phải tự đặt hàng');
+        var o = (await a.w.KFCOrders.listOrders())[0];
+        eq([o.customer_name, o.payment_method], [null, null]);
+      } finally { a.done(); }
+    });
+
+    [[1440, 2], [1024, 2], [768, 2], [390, 1], [375, 1]].forEach(function (c) {
+      test('Thanh toán responsive ' + c[0] + 'px: không tràn ngang, ' + c[1] + ' cột, nút xác nhận bấm được, màn hình thành công vừa khít', async function () {
+        localStorage.clear();
+        var a = await load({ csv: FIXTURE, payment: true, width: c[0] });
+        try {
+          await openCheckout(a, [0, 2]);
+          var d = dlg(a).getBoundingClientRect();
+          assert(d.left >= -1 && d.right <= a.w.innerWidth + 1, 'hộp thoại bị cắt ngang: ' + d.left + '..' + d.right);
+          assert(d.height <= a.w.innerHeight + 1, 'hộp thoại cao hơn màn hình');
+          assert(a.d.documentElement.scrollWidth <= a.w.innerWidth, 'tràn ngang');
+          assert(dlg(a).scrollWidth <= dlg(a).clientWidth + 1, 'nội dung hộp thoại tràn ngang');
+          var cols = a.w.getComputedStyle(a.d.querySelector('.co-layout')).gridTemplateColumns.split(' ').length;
+          eq(cols, c[1], 'số cột');
+          if (c[0] < 768) { eq(Math.round(d.width), c[0], 'mobile: full màn hình'); eq(Math.round(d.height), 800, 'mobile: full chiều cao'); }
+          submitBtn(a).scrollIntoView(); await wait(30);
+          var sb = submitBtn(a).getBoundingClientRect();
+          assert(sb.width > 150 && sb.left >= 0 && sb.right <= a.w.innerWidth, 'nút xác nhận bị cắt');
+          assert(await placeVia(a, 'bank_transfer'));
+          assert(a.d.documentElement.scrollWidth <= a.w.innerWidth, 'màn hình thành công tràn ngang');
+          assert(a.$('checkout-body').scrollWidth <= a.$('checkout-body').clientWidth + 1, 'nội dung thành công tràn ngang');
+          var cp = a.d.querySelector('.co-copy').getBoundingClientRect();
+          assert(cp.right <= a.w.innerWidth && cp.left >= 0, 'nút Chép bị cắt');
+        } finally { a.done(); }
+      });
+    });
+
+    test('DESIGN.md: Arial, đỏ #d71920, nền xám #f5f5f5, nền sáng, bố cục tối đa 1200px', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        var cs = function (e) { return a.w.getComputedStyle(e); };
+        assert(cs(dlg(a)).fontFamily.indexOf('Arial') === 0, 'font: ' + cs(dlg(a)).fontFamily);
+        assert(cs(co(a, 'name')).fontFamily.indexOf('Arial') === 0, 'font ô nhập: ' + cs(co(a, 'name')).fontFamily);
+        eq(cs(a.d.querySelector('.co-step')).backgroundColor, 'rgb(215, 25, 32)');
+        eq(cs(submitBtn(a)).backgroundColor, 'rgb(215, 25, 32)');
+        eq(cs(a.d.querySelector('.co-summary')).backgroundColor, 'rgb(245, 245, 245)');
+        eq(cs(dlg(a)).backgroundColor, 'rgb(255, 255, 255)');
+        eq(cs(a.d.querySelector('.co-row--total dd')).color, 'rgb(215, 25, 32)');
+        assert(dlg(a).getBoundingClientRect().width <= 1200, 'rộng quá 1200px');
+        var weights = [].map.call(dlg(a).querySelectorAll('*'), function (e) { return cs(e).fontWeight; });
+        assert(weights.every(function (w) { return w === '400' || w === '700'; }), 'chỉ dùng weight 400/700: ' + weights.filter(function (w) { return w !== '400' && w !== '700'; }).join(','));
+      } finally { a.done(); }
+    });
+
+    test('Chọn phương thức bằng bàn phím: radio chuyển được bằng phím mũi tên và hiển thị trạng thái chọn', async function () {
+      localStorage.clear();
+      var a = await load(PAYLOAD);
+      try {
+        await openCheckout(a, [0]);
+        var radios = a.d.querySelectorAll('input[name=payment-method]');
+        eq(radios[0].checked, true);
+        radios[1].click();
+        eq([radios[0].checked, radios[1].checked], [false, true]);
+        var box = radios[1].nextElementSibling;
+        eq(a.w.getComputedStyle(box).borderColor, 'rgb(215, 25, 32)', 'phương thức đang chọn phải viền đỏ');
+        eq(a.d.querySelectorAll('input[name=payment-method]:checked').length, 1);
+      } finally { a.done(); }
+    });
+
+    // ---------- Xử lý lỗi (IMPLEMENTATION.md: CSV không tồn tại / rỗng / sai format / ảnh không tồn tại) ----------
+    test('Lỗi: CSV trả 404 -> dùng dữ liệu dự phòng, giỏ vẫn hoạt động', async function () {
+      localStorage.clear();
+      var a = await load({ csvMode: '404' });
+      try {
+        eq(addBtns(a).length, 10);
+        addBtns(a)[0].click(); await wait(30);
+        eq(a.$('cart-badge').textContent, '1');
+      } finally { a.done(); }
+    });
+
+    test('Lỗi: mất mạng (fetch reject) -> dùng dữ liệu dự phòng', async function () {
+      localStorage.clear();
+      var a = await load({ csvMode: 'network' });
+      try { eq(addBtns(a).length, 10); } finally { a.done(); }
+    });
+
+    test('Lỗi: CSV rỗng -> báo lỗi thân thiện, trang và giỏ hàng không crash', async function () {
+      localStorage.clear();
+      var a = await load({ csv: '' });
+      try {
+        eq(addBtns(a).length, 0);
+        assert(a.$('menu-status').textContent.indexOf('Không thể tải menu') > -1, 'thông báo lỗi');
+        a.$('cart-toggle').click(); await wait(300);
+        assert(a.$('cart-drawer').classList.contains('is-open'), 'giỏ vẫn mở được');
+        assert(a.d.querySelector('.cart-empty'), 'giỏ rỗng');
+      } finally { a.done(); }
+    });
+
+    test('Lỗi: CSV chỉ có header -> báo lỗi, không crash', async function () {
+      localStorage.clear();
+      var a = await load({ csv: 'id,name,category,description,price,image,featured,discount' });
+      try {
+        eq(addBtns(a).length, 0);
+        assert(a.$('menu-status').textContent.indexOf('Không thể tải menu') > -1);
+      } finally { a.done(); }
+    });
+
+    test('Lỗi: CSV sai format (dòng thiếu cột, giá chữ, discount bậy) -> bỏ dòng hỏng, dòng tốt vẫn thêm được vào giỏ, giá không âm', async function () {
+      localStorage.clear();
+      var csv = [
+        'id,name,category,description,price,image,featured,discount',
+        '1,"Món tốt","Gà rán","ok","50000","assets/images/chicken-1.jpg","true","10"',
+        '2,"Thiếu cột"',
+        '3,"Giá chữ","Gà rán","x","abc","assets/images/chicken-1.jpg","false","0"',
+        '4,"Giảm bậy","Gà rán","x","40000","assets/images/chicken-1.jpg","false","999"',
+        '5,"Giảm âm","Gà rán","x","40000","assets/images/chicken-1.jpg","false","-50"'
+      ].join('\n');
+      var a = await load({ csv: csv });
+      try {
+        var n = addBtns(a).length;
+        assert(n >= 3, 'phải render các dòng đọc được, có ' + n);
+        for (var i = 0; i < n; i++) addBtns(a)[i].click();
+        await wait(50);
+        var st = a.w.KFCCart.getState();
+        assert(st.totals.total >= 0, 'tổng không âm');
+        st.items.forEach(function (it) { assert(it.unitPrice >= 0 && it.unitPrice <= it.price, 'giá bán sai: ' + JSON.stringify(it)); });
+        eq(st.items.filter(function (i) { return i.id === '1'; })[0].unitPrice, 45000);
+        eq(st.items.filter(function (i) { return i.id === '4'; })[0].unitPrice, 0, 'discount 999 kẹp về 100%');
+        eq(st.items.filter(function (i) { return i.id === '5'; })[0].unitPrice, 40000, 'discount âm kẹp về 0');
+      } finally { a.done(); }
+    });
+
+    test('Lỗi: ảnh sản phẩm không tồn tại -> thẻ dùng ảnh dự phòng, giỏ dùng biểu tượng thay thế, không vỡ layout', async function () {
+      localStorage.clear();
+      var csv = 'id,name,category,description,price,image,featured,discount\n1,"Món lỗi ảnh","Gà rán","x","50000","assets/images/khong-ton-tai.jpg","false","0"';
+      var a = await load({ csv: csv });
+      try {
+        addBtns(a)[0].click(); a.w.KFCCart.open(); await wait(1200);
+        var thumb = a.d.querySelector('.cart-item__thumb');
+        assert(thumb.classList.contains('cart-item__thumb--fallback') || thumb.querySelector('img') === null, 'ảnh giỏ phải có phương án thay thế');
+        eq(thumb.textContent, '🍗');
+        var w = thumb.getBoundingClientRect().width; eq(Math.round(w), 72, 'kích thước thumb không đổi');
+      } finally { a.done(); }
+    });
+
+    test('Lỗi: localStorage bị chặn (private mode) -> giỏ vẫn dùng được trong phiên', async function () {
+      localStorage.clear();
+      var a = await load({ blockStorage: true });
+      try {
+        eq(addBtns(a).length, 10);
+        addBtns(a)[0].click(); addBtns(a)[2].click(); await wait(50);
+        eq(a.$('cart-badge').textContent, '2');
+        a.w.KFCCart.open(); await wait(300);
+        eq(rows(a).length, 2);
+      } finally { a.done(); }
+    });
+
+    test('Lỗi: dữ liệu giỏ trong storage bị hỏng -> bắt đầu giỏ rỗng, không crash', async function () {
+      localStorage.setItem('kfc_cart_v1', '{"v":1,"items":[{"id":"1","name":"x","price":"abc","qty":2},null,42]');
+      var a = await load();
+      try {
+        eq(a.$('cart-badge').hidden, true);
+        eq(addBtns(a).length, 10);
+        addBtns(a)[0].click(); await wait(30);
+        eq(a.$('cart-badge').textContent, '1');
+      } finally { a.done(); localStorage.clear(); }
+    });
+
+    test('Đồng bộ menu: món trong giỏ không còn trong menu bị gỡ kèm thông báo; giá đổi được cập nhật', async function () {
+      localStorage.setItem('kfc_cart_v1', JSON.stringify({ v: 1, items: [
+        { id: '1', name: 'Gà Rán Giòn Cay', price: 99999, discount: 0, qty: 2 },
+        { id: '999', name: 'Món đã ngừng bán', price: 1000, discount: 0, qty: 1 }
+      ] }));
+      var a = await load({ csv: FIXTURE });
+      try {
+        await wait(100);
+        var st = a.w.KFCCart.getState();
+        eq(st.items.length, 1); eq(st.items[0].id, '1');
+        eq(st.items[0].price, 45000); eq(st.items[0].unitPrice, 36000);
+        var msgs = Array.prototype.map.call(a.d.querySelectorAll('.toast__msg'), function (t) { return t.textContent; }).join('|');
+        assert(msgs.indexOf('không còn trong thực đơn') > -1, 'thông báo gỡ món: ' + msgs);
+        assert(msgs.indexOf('được cập nhật') > -1, 'thông báo đổi giá: ' + msgs);
+      } finally { a.done(); localStorage.clear(); }
+    });
+
+    // ---------- Bảo mật ----------
+    test('XSS: tên/mô tả chứa HTML từ CSV chỉ hiển thị là chữ (thẻ + giỏ hàng)', async function () {
+      localStorage.clear();
+      var evil = '<img src=x onerror="window.__xss=1">';
+      var csv = 'id,name,category,description,price,image,featured,discount\n1,"' + evil.replace(/"/g, '""') + '","Gà rán","<b>đậm</b><script>window.__xss=2<\/script>","50000","assets/images/chicken-1.jpg","true","0"';
+      var a = await load({ csv: csv });
+      try {
+        addBtns(a)[0].click(); a.w.KFCCart.open(); await wait(400);
+        eq(a.w.__xss, undefined, 'script đã chạy');
+        eq(a.d.querySelectorAll('img[src="x"]').length, 0, 'thẻ img độc hại đã được tạo');
+        assert(a.d.querySelector('.cart-item__name').textContent === evil, 'tên giỏ phải là chữ nguyên văn');
+        assert(a.d.querySelector('.product-card__title').textContent === evil, 'tên thẻ phải là chữ nguyên văn');
+        eq(a.d.querySelectorAll('.product-card__description b').length, 0, 'mô tả không được render HTML');
+      } finally { a.done(); }
+    });
+
+    // ---------- Runner ----------
+    (async function run() {
+      var list = document.getElementById('list');
+      for (var i = 0; i < tests.length; i++) {
+        var t = tests[i];
+        var rec = { name: t.name, ok: true };
+        try { await t.fn(); } catch (e) { rec.ok = false; rec.error = e && e.message ? e.message : String(e); }
+        results.push(rec);
+        var li = document.createElement('li');
+        li.className = rec.ok ? 'pass' : 'fail';
+        li.textContent = (rec.ok ? '✓ ' : '✗ ') + rec.name;
+        if (!rec.ok) { var s = document.createElement('span'); s.className = 'err'; s.textContent = rec.error; li.appendChild(s); }
+        list.appendChild(li);
+      }
+      localStorage.clear();
+      var failed = results.filter(function (r) { return !r.ok; }).length;
+      var summary = document.getElementById('summary');
+      summary.textContent = (results.length - failed) + '/' + results.length + ' test passed' + (failed ? ' - ' + failed + ' FAILED' : '');
+      summary.className = failed ? 'fail' : 'pass';
+      window.__uiResults = results;
+    })();
+  })();
+  </script>
+</body>
+</html>

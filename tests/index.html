@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test - Module Giỏ hàng</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #f5f5f5; color: #222; margin: 0; padding: 24px; }
+    main { max-width: 900px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; }
+    h1 { color: #d71920; margin-top: 0; }
+    #summary { font-weight: 700; margin-bottom: 16px; }
+    .pass { color: #1a7f37; }
+    .fail { color: #d71920; font-weight: 700; }
+    li { margin: 4px 0; list-style: none; font-size: 0.9rem; }
+    .err { display: block; color: #d71920; margin-left: 20px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Test module Giỏ hàng</h1>
+    <p>Chạy trong trình duyệt (phần test dữ liệu menu cần Node: <code>node tests/run.js</code>).</p>
+    <p id="summary">Đang chạy...</p>
+    <ul id="list"></ul>
+  </main>
+  <script src="harness.js"></script>
+  <script src="../js/pricing.js"></script>
+  <script src="../js/payment/payment-validate.js"></script>
+  <script src="../js/cart/cart-store.js"></script>
+  <script src="pricing.test.js"></script>
+  <script src="payment-validate.test.js"></script>
+  <script src="cart-store.test.js"></script>
+  <script src="discount-store.test.js"></script>
+  <script>
+    window.__wait().then(function () {
+      var results = window.__testResults();
+      var failed = results.filter(function (r) { return !r.ok; }).length;
+      var summary = document.getElementById('summary');
+      summary.textContent = (results.length - failed) + '/' + results.length + ' test passed' + (failed ? ' - ' + failed + ' FAILED' : '');
+      summary.className = failed ? 'fail' : 'pass';
+      var list = document.getElementById('list');
+      results.forEach(function (r) {
+        var li = document.createElement('li');
+        li.className = r.ok ? 'pass' : 'fail';
+        li.textContent = (r.ok ? '✓ ' : '✗ ') + r.name;
+        if (!r.ok) { var e = document.createElement('span'); e.className = 'err'; e.textContent = r.error; li.appendChild(e); }
+        list.appendChild(li);
+      });
+    });
+  </script>
+</body>
+</html>
