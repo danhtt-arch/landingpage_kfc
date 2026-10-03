@@ -1,6 +1,6 @@
 /**
  * KFC Orders - Khởi tạo trong trình duyệt: nạp sql.js (SQLite/WebAssembly) khi cần và gắn các phần lại với nhau.
- * Tạo window.KFCOrders = { placeOrder, listOrders, exportDb, saveToFile, storage }.
+ * Tạo window.KFCOrders = { placeOrder, listOrders, getOrder, updateOrderStatus, exportDb, saveToFile, storage }.
  *
  * sql.js chỉ được nạp ở lần đặt hàng (hoặc lưu file) đầu tiên, nên không làm chậm lúc mở trang.
  * Lưu ý: WebAssembly cần trang chạy qua http (Live Server), không chạy khi mở bằng file://.
@@ -85,6 +85,8 @@
     placeOrder: service.placeOrder,
     listOrders: service.listOrders,
     exportDb: service.exportDb,
+    getOrder: service.getOrder,
+    updateOrderStatus: service.updateOrderStatus,
     saveToFile: saveToFile,
     storage: storage
   };

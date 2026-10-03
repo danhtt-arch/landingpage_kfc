@@ -8,6 +8,7 @@ var js = function () { return path.join.apply(path, [__dirname, '..', 'js'].conc
 require('./harness.js');
 globalThis.KFCPricing = require(js('pricing.js'));
 globalThis.KFCCartStore = require(js('cart', 'cart-store.js'));
+globalThis.KFCOrderStatus = require(js('orders', 'order-status.js'));
 globalThis.KFCOrderService = require(js('orders', 'order-service.js'));
 globalThis.KFCDbStorage = require(js('orders', 'db-storage.js'));
 globalThis.KFCPaymentValidate = require(js('payment', 'payment-validate.js'));
@@ -21,6 +22,8 @@ require('./order-service.test.js');
 require('./order-db.test.js');
 require('./payment-validate.test.js');
 require('./payment-service.test.js');
+require('./order-status.test.js');
+require('./order-status-service.test.js');
 
 globalThis.__wait().then(function () {
   process.exit(globalThis.__report() ? 1 : 0);

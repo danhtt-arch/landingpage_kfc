@@ -14,14 +14,15 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('../pricing.js'));
+    module.exports = factory(require('../pricing.js'), require('./order-status.js'));
   } else {
-    root.KFCOrderService = factory(root.KFCPricing);
+    root.KFCOrderService = factory(root.KFCPricing, root.KFCOrderStatus);
   }
-})(typeof self !== 'undefined' ? self : this, function (Pricing) {
+})(typeof self !== 'undefined' ? self : this, function (Pricing, Status) {
   'use strict';
 
   if (!Pricing) throw new Error('[KFC Orders] Thiếu js/pricing.js');
+  if (!Status) throw new Error('[KFC Orders] Thiếu js/orders/order-status.js');
 
   var DB_FILE_NAME = 'orders.db';
   var MAX_QTY = 99;
@@ -68,7 +69,42 @@
     ['orders', 'customer_address', 'TEXT'],
     ['orders', 'customer_note', 'TEXT'],
     ['orders', 'payment_method', 'TEXT'],
-    ['orders', 'payment_status', 'TEXT']
+    ['orders', 'payment_status', 'TEXT'],
+    // Trạng thái đơn hàng (module Trạng Thái Đơn Hàng). Đơn cũ tự nhận giá trị mặc định 'not_sent'.
+    ['orders', 'status', "TEXT NOT NULL DEFAULT 'not_sent' CHECK (status IN (" + Status.IDS.map(sqlQuote).join(', ') + '))'],
+    ['orders', 'cancel_reason', 'TEXT CHECK (cancel_reason IS NULL OR cancel_reason IN (' + Status.CANCEL_REASONS.map(sqlQuote).join(', ') + '))'],
+    ['orders', 'status_updated_at', 'TEXT']
+  ];
+
+  /**
+   * Bảng lịch sử đổi trạng thái + các trigger bảo vệ quy tắc ngay trong SQLite,
+   * để dù ai ghi trực tiếp vào orders.db cũng không thể phá quy tắc (đi tiến, hủy phải có lý do...).
+   * Chạy sau khi đã thêm cột (MIGRATION_COLUMNS).
+   */
+  var STATUS_SCHEMA_STATEMENTS = [
+    'CREATE TABLE IF NOT EXISTS order_status_history (' +
+    '  id          INTEGER PRIMARY KEY AUTOINCREMENT,' +
+    '  order_id    INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,' +
+    '  from_status TEXT,' +
+    '  to_status   TEXT NOT NULL CHECK (to_status IN (' + Status.IDS.map(sqlQuote).join(', ') + ')),' +
+    '  reason      TEXT,' +
+    '  note        TEXT,' +
+    '  changed_at  TEXT NOT NULL' +
+    ')',
+    'CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_history(order_id)',
+    // đơn mới luôn bắt đầu ở trạng thái đầu tiên
+    'CREATE TRIGGER IF NOT EXISTS trg_orders_initial_status BEFORE INSERT ON orders ' +
+    "WHEN NEW.status != '" + Status.INITIAL + "' BEGIN SELECT RAISE(ABORT, 'invalid_initial_status'); END",
+    // chỉ cho phép các bước chuyển hợp lệ (sinh từ bảng quy tắc, không viết tay lần thứ hai)
+    'CREATE TRIGGER IF NOT EXISTS trg_orders_status_guard BEFORE UPDATE OF status ON orders ' +
+    'WHEN NEW.status != OLD.status AND NOT (' +
+    Object.keys(Status.TRANSITIONS).filter(function (f) { return Status.TRANSITIONS[f].length; }).map(function (f) {
+      return "(OLD.status = '" + f + "' AND NEW.status IN (" + Status.TRANSITIONS[f].map(sqlQuote).join(', ') + '))';
+    }).join(' OR ') +
+    ") BEGIN SELECT RAISE(ABORT, 'invalid_status_transition'); END",
+    // hủy đơn bắt buộc có lý do
+    'CREATE TRIGGER IF NOT EXISTS trg_orders_cancel_reason BEFORE UPDATE OF status ON orders ' +
+    "WHEN NEW.status = 'cancelled' AND NEW.cancel_reason IS NULL BEGIN SELECT RAISE(ABORT, 'cancel_reason_required'); END"
   ];
 
   var EXPECTED_COLUMNS = {
@@ -76,6 +112,8 @@
     order_items: ['id', 'order_id', 'product_id', 'product_name', 'category', 'original_price',
       'discount_percent', 'unit_price', 'quantity', 'line_total']
   };
+
+  function sqlQuote(v) { return "'" + String(v).replace(/'/g, "''") + "'"; } // chỉ dùng cho hằng số nội bộ
 
   /** Lỗi có `code` để UI chọn thông báo phù hợp */
   function OrderError(code, message, cause) {
@@ -268,6 +306,7 @@
       MIGRATION_COLUMNS.forEach(function (m) {
         if (tableColumns(db, m[0]).indexOf(m[1]) === -1) db.run('ALTER TABLE ' + m[0] + ' ADD COLUMN ' + m[1] + ' ' + m[2]);
       });
+      STATUS_SCHEMA_STATEMENTS.forEach(function (sql) { db.run(sql); });
     }
 
     /** Mở DB từ storage (hoặc tạo mới nếu chưa có). Không bao giờ thay thế DB hỏng bằng DB rỗng. */
@@ -320,10 +359,10 @@
           try {
             code = 'KFC-' + order.dateKey + '-' + pad(nextSequence(db, order.dateKey), 4);
             var cu = order.customer, pay = order.payment;
-            db.run('INSERT INTO orders (order_code, created_at, total_qty, subtotal, discount_total, total, customer_name, customer_phone, customer_address, customer_note, payment_method, payment_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            db.run('INSERT INTO orders (order_code, created_at, total_qty, subtotal, discount_total, total, customer_name, customer_phone, customer_address, customer_note, payment_method, payment_status, status, status_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               [code, order.createdAt, order.totalQty, order.subtotal, order.discountTotal, order.total,
                 cu ? cu.name : null, cu ? cu.phone : null, cu ? cu.address : null, cu ? cu.note : null,
-                pay ? pay.method : null, pay ? pay.status : null]);
+                pay ? pay.method : null, pay ? pay.status : null, Status.INITIAL, order.createdAt]);
             id = Number(db.exec('SELECT last_insert_rowid()')[0].values[0][0]);
             var stmt = db.prepare('INSERT INTO order_items (order_id, product_id, product_name, category, original_price, discount_percent, unit_price, quantity, line_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
             try {
@@ -358,8 +397,86 @@
           items: order.items,
           customer: order.customer,
           payment: order.payment,
+          status: Status.INITIAL,
           persistent: storage.persistent !== false
         };
+      });
+    }
+
+    /**
+     * Đổi trạng thái đơn hàng (đi tiến, hủy phải có lý do; xem js/orders/order-status.js).
+     * Mọi kiểm tra chạy TRƯỚC khi ghi; ghi trong transaction cùng một dòng lịch sử; lỗi thì dữ liệu cũ nguyên vẹn.
+     * @param {{orderId:number, to:string, expectedFrom?:string, reason?:string, note?:string}} input
+     *   expectedFrom: trạng thái mà người dùng đang thấy; nếu đã bị đổi ở nơi khác -> lỗi status_conflict
+     * @returns {Promise<{id:number, code:string, from:string, to:string, reason:string|null, note:string, changedAt:string}>}
+     */
+    function updateOrderStatus(input) {
+      input = input && typeof input === 'object' ? input : {};
+      var id = input.orderId;
+      if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) {
+        return Promise.reject(OrderError('order_not_found', 'Mã đơn hàng không hợp lệ'));
+      }
+      if (!Status.isStatus(input.to)) return Promise.reject(OrderError('invalid_status', 'Trạng thái không hợp lệ'));
+
+      return lock(async function () {
+        var db = await openDb();
+        var bytes, result;
+        try {
+          var rows = rowsOf(db.exec('SELECT id, order_code, status FROM orders WHERE id = ?', [id]));
+          if (!rows.length) throw OrderError('order_not_found', 'Không tìm thấy đơn hàng');
+          var current = Status.normalize(rows[0].status);
+
+          if (input.expectedFrom !== undefined && input.expectedFrom !== null && input.expectedFrom !== current) {
+            var conflict = OrderError('status_conflict', 'Trạng thái đơn hàng đã thay đổi, hiện là "' + Status.label(current) + '"');
+            conflict.currentStatus = current;
+            throw conflict;
+          }
+          var v = Status.validateChange(current, input.to, { reason: input.reason, note: input.note });
+          if (!v.ok) throw OrderError(v.code, v.message);
+
+          var changedAt = clock().toISOString();
+          db.run('BEGIN');
+          try {
+            db.run('UPDATE orders SET status = ?, cancel_reason = ?, status_updated_at = ? WHERE id = ?', [input.to, v.reason, changedAt, id]);
+            db.run('INSERT INTO order_status_history (order_id, from_status, to_status, reason, note, changed_at) VALUES (?, ?, ?, ?, ?, ?)',
+              [id, current, input.to, v.reason, v.note, changedAt]);
+            db.run('COMMIT');
+          } catch (e) {
+            try { db.run('ROLLBACK'); } catch (_) { /* bỏ qua */ }
+            throw OrderError('db_write_failed', 'Không ghi được trạng thái mới vào SQLite', e);
+          }
+          bytes = db.export();
+          result = { id: id, code: rows[0].order_code, from: current, to: input.to, reason: v.reason, note: v.note, changedAt: changedAt };
+        } finally {
+          db.close();
+        }
+        try {
+          await storage.save(bytes);
+        } catch (e) {
+          throw OrderError('storage_save_failed', 'Không lưu được tệp orders.db', e);
+        }
+        return result;
+      });
+    }
+
+    /** Một đơn kèm các dòng hàng và lịch sử đổi trạng thái (theo thứ tự thời gian) */
+    function getOrder(id) {
+      if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) {
+        return Promise.reject(OrderError('order_not_found', 'Mã đơn hàng không hợp lệ'));
+      }
+      return lock(async function () {
+        var db = await openDb();
+        try {
+          var rows = rowsOf(db.exec('SELECT * FROM orders WHERE id = ?', [id]));
+          if (!rows.length) throw OrderError('order_not_found', 'Không tìm thấy đơn hàng');
+          var order = rows[0];
+          order.status = Status.normalize(order.status);
+          order.items = rowsOf(db.exec('SELECT * FROM order_items WHERE order_id = ? ORDER BY id', [id]));
+          order.history = rowsOf(db.exec('SELECT * FROM order_status_history WHERE order_id = ? ORDER BY id', [id]));
+          return order;
+        } finally {
+          db.close();
+        }
       });
     }
 
@@ -386,7 +503,7 @@
       });
     }
 
-    return { placeOrder: placeOrder, listOrders: listOrders, exportDb: exportDb };
+    return { placeOrder: placeOrder, listOrders: listOrders, exportDb: exportDb, updateOrderStatus: updateOrderStatus, getOrder: getOrder };
   }
 
   return {
@@ -396,6 +513,7 @@
     DB_FILE_NAME: DB_FILE_NAME,
     PAYMENT_METHODS: PAYMENT_METHODS,
     SCHEMA_STATEMENTS: SCHEMA_STATEMENTS,
+    STATUS_SCHEMA_STATEMENTS: STATUS_SCHEMA_STATEMENTS,
     MAX_QTY: MAX_QTY
   };
 });

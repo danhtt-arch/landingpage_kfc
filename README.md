@@ -18,7 +18,9 @@ landingpage_kfc/
 ├── README.md           # Hướng dẫn dự án
 ├── css/
 │   ├── style.css       # Design System & Responsive Stylesheet
-│   └── cart.css        # Giao diện module Giỏ hàng
+│   ├── cart.css        # Giao diện module Giỏ hàng
+│   ├── payment.css     # Giao diện module Thanh toán
+│   └── order-status.css # Giao diện module Trạng thái đơn hàng
 ├── js/
 │   ├── app.js          # Logic tải CSV, render DOM, filter category, formatting
 │   ├── csv.js          # CSV parser (tách riêng để test)
@@ -27,9 +29,17 @@ landingpage_kfc/
 │   │   ├── cart-store.js   # Module 1: logic giỏ hàng + lưu localStorage
 │   │   └── cart-ui.js      # Module 1: drawer, badge, toast, màn hình đặt hàng thành công
 │   ├── orders/             # Module 1: lưu đơn hàng vào SQLite (orders.db)
+│   │   ├── order-status.js     # Module 3: quy tắc trạng thái đơn hàng
 │   │   ├── order-service.js
 │   │   ├── db-storage.js
 │   │   └── orders-boot.js
+│   ├── order-status/       # Module 3: trạng thái đơn hàng
+│   │   └── order-status-ui.js
+│   ├── payment/            # Module 2: thanh toán
+│   │   ├── payment-validate.js
+│   │   ├── payment-config.js
+│   │   ├── payment-service.js
+│   │   └── payment-ui.js
 │   └── vendor/             # sql.js (SQLite/WebAssembly), xem js/vendor/README.md
 ├── data/
 │   └── menu.csv        # Nguồn dữ liệu sản phẩm động
@@ -37,7 +47,9 @@ landingpage_kfc/
 │   └── images/         # Hình ảnh sản phẩm + hero
 ├── tests/              # Test module: node tests/run.js, tests/index.html (logic), tests/ui.html (giao diện + lưu SQLite)
 └── docs/
-    └── MODULE-01-CART.md   # Tài liệu module Giỏ hàng
+    ├── MODULE-01-CART.md       # Tài liệu module Giỏ hàng
+    ├── MODULE-02-PAYMENT.md    # Tài liệu module Thanh toán
+    └── MODULE-03-ORDER-STATUS.md # Tài liệu module Trạng thái đơn hàng
 ```
 
 ## 📊 Cấu trúc Dữ liệu Menu (CSV)
@@ -66,8 +78,8 @@ File `data/menu.csv` chứa danh sách sản phẩm với các cột:
 | # | Module | Trạng thái | Tài liệu |
 |---|--------|-----------|----------|
 | 1 | Giỏ hàng + lưu đơn vào SQLite (`orders.db`) | Hoàn thành | [docs/MODULE-01-CART.md](docs/MODULE-01-CART.md) |
-| 2 | Thanh toán | Chưa làm | |
-| 3 | Trạng thái đơn hàng | Chưa làm | |
+| 2 | Thanh toán | Hoàn thành | [docs/MODULE-02-PAYMENT.md](docs/MODULE-02-PAYMENT.md) |
+| 3 | Trạng thái đơn hàng | Hoàn thành | [docs/MODULE-03-ORDER-STATUS.md](docs/MODULE-03-ORDER-STATUS.md) |
 
 ## 💻 Cách chạy dự án
 

@@ -54,6 +54,7 @@
       if (!opts.keepData) await resetIdb(); // mỗi test bắt đầu với orders.db trống
       var html = await (await fetch('../index.html', { cache: 'no-store' })).text();
       // Mặc định gỡ module Thanh toán để các test của Giỏ hàng chạy độc lập; truyền payment:true để bật
+      if (!opts.status) html = html.replace(/<script src="js\/order-status\/[^"]*"><\/script>\s*/g, '');
       if (!opts.payment) html = html.replace(/<script src="js\/payment\/[^"]*"><\/script>\s*/g, '');
       var cfg = encodeURIComponent(JSON.stringify({ csv: opts.csv, csvMode: opts.csvMode, blockStorage: !!opts.blockStorage, wasmFail: !!opts.wasmFail, blockIdb: !!opts.blockIdb }));
       // tắt transition/animation trong iframe để phép đo vị trí không phụ thuộc hiệu ứng đang chạy
@@ -1061,6 +1062,519 @@
         var box = radios[1].nextElementSibling;
         eq(a.w.getComputedStyle(box).borderColor, 'rgb(215, 25, 32)', 'phương thức đang chọn phải viền đỏ');
         eq(a.d.querySelectorAll('input[name=payment-method]:checked').length, 1);
+      } finally { a.done(); }
+    });
+
+    // ======================================================================
+    // MODULE 3: TRẠNG THÁI ĐƠN HÀNG
+    // ======================================================================
+    var SP1 = { id: '1', name: 'Gà Giảm 20', category: 'Gà rán', price: 45000, discount: 20 };
+    var SP2 = { id: '2', name: 'Gà Thường', category: 'Gà rán', price: 45000, discount: 0 };
+    var SP3 = { id: '3', name: 'Combo Giảm 10', category: 'Combo', price: 95000, discount: 10 };
+    var SO = { csv: FIXTURE, status: true };
+    var CANCEL_AFTER_SEND = [{ to: 'sending' }, { to: 'cancelled', reason: 'accident', note: 'Xe giao hàng va chạm' }];
+
+    function metaOf(name, method) { return { customer: { name: name, phone: '0912345678', address: '12 Nguyễn Huệ, Quận 1, TP.HCM', note: 'Ít cay' }, payment: { method: method || 'cod' } }; }
+    function stateOf(a, list) {
+      var c = a.w.KFCCartStore.createCartStore({ storage: { getItem: function () { return null; }, setItem: function () {} } });
+      list.forEach(function (p) { c.add(p[0], p[1] || 1); });
+      return c.getState();
+    }
+    async function addOrder(a, name, path, products, method) {
+      var o = await a.w.KFCOrders.placeOrder(stateOf(a, products || [[SP1, 2]]), metaOf(name, method));
+      for (var i = 0; i < (path || []).length; i++) await a.w.KFCOrders.updateOrderStatus({ orderId: o.id, to: path[i].to, reason: path[i].reason, note: path[i].note });
+      return o;
+    }
+    function odlg(a) { return a.$('orders-dialog'); }
+    function cardsOf(a) { return [].slice.call(a.d.querySelectorAll('.os-card')); }
+    function actionBtn(a, to) { return a.d.querySelector('.os-actions [data-to="' + to + '"]'); }
+    function confirmBtn(a) { return a.d.querySelector('.os-actions [data-confirm]'); }
+    function flashText(a) { var f = a.d.querySelector('.os-flash'); return f && !f.hidden ? f.textContent : ''; }
+    function actErr(a) { var e = a.d.querySelector('.os-error'); return e && !e.hidden ? e.textContent : ''; }
+    async function openOrders(a) {
+      a.$('orders-toggle').click();
+      await waitFor(function () { return a.d.querySelector('.os-card') || a.d.querySelector('.os-state'); }); await wait(30);
+    }
+    async function openCard(a, id) {
+      a.d.querySelector('.os-card[data-id="' + id + '"]').click();
+      await waitFor(function () { return a.d.querySelector('.os-detail__code'); }); await wait(30);
+    }
+    async function waitStatus(a, status) {
+      return waitFor(function () { var b = a.d.querySelector('.os-detail__head .os-badge'); return b && b.classList.contains('os-badge--' + status); });
+    }
+    function lum(c) {
+      var m = c.match(/[\d.]+/g).map(Number); var al = m.length > 3 ? m[3] : 1;
+      var ch = m.slice(0, 3).map(function (v) { v = al * v + (1 - al) * 255; v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+      return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+    }
+    function contrast(fg, bg) { var a = lum(fg), b = lum(bg); if (a < b) { var t = a; a = b; b = t; } return (a + 0.05) / (b + 0.05); }
+
+    test('Đơn hàng: nút trên header chỉ hiện khi module sẵn sàng; mở/đóng bằng nút, Esc, X, overlay; focus, inert, aria', async function () {
+      localStorage.clear();
+      var off = await load({ csv: FIXTURE }); // không bật module
+      try { eq(off.$('orders-toggle').hidden, true, 'ẩn khi không có module'); eq(off.w.KFCOrderStatusUI, undefined); } finally { off.done(); }
+      var a = await load(SO);
+      try {
+        var t = a.$('orders-toggle');
+        eq(t.hidden, false); eq(t.getAttribute('aria-label'), 'Xem đơn hàng'); eq(t.getAttribute('aria-haspopup'), 'dialog'); eq(t.getAttribute('aria-expanded'), 'false');
+        assert(t.getBoundingClientRect().height >= 44, 'vùng bấm >= 44px');
+        t.focus(); await openOrders(a);
+        eq([odlg(a).getAttribute('role'), odlg(a).getAttribute('aria-modal'), odlg(a).getAttribute('aria-hidden'), t.getAttribute('aria-expanded')], ['dialog', 'true', 'false', 'true']);
+        assert(a.d.querySelector('main').hasAttribute('inert'), 'nền bị khóa');
+        eq(a.$('orders-title').textContent, 'Đơn hàng');
+        key(a, 'Escape'); await wait(50);
+        assert(!a.w.KFCOrderStatusUI.isOpen() && !a.d.querySelector('main').hasAttribute('inert'), 'Esc đóng');
+        assert(a.d.activeElement === t, 'trả focus về nút Đơn hàng');
+        t.click(); await wait(50); a.$('orders-close').click(); await wait(50); assert(!a.w.KFCOrderStatusUI.isOpen(), 'nút X đóng');
+        t.click(); await wait(50); a.$('orders-overlay').click(); await wait(50); assert(!a.w.KFCOrderStatusUI.isOpen(), 'overlay đóng');
+        t.click(); await wait(50); t.click(); await wait(50); assert(!a.w.KFCOrderStatusUI.isOpen(), 'bấm lại nút để đóng');
+      } finally { a.done(); }
+    });
+
+    test('Chưa có đơn nào: hiện trạng thái trống; nút Xem thực đơn đóng hộp thoại', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        await openOrders(a);
+        assert(a.d.querySelector('.os-state__title').textContent.indexOf('Chưa có đơn hàng nào') === 0);
+        eq(a.d.querySelectorAll('.os-card').length, 0); eq(a.d.querySelectorAll('.os-chip').length, 0, 'không có bộ lọc khi chưa có đơn');
+        assert(a.d.activeElement === a.d.querySelector('.os-state__title'), 'focus vào tiêu đề');
+        a.d.querySelector('.os-state .btn').click(); await wait(50);
+        assert(!a.w.KFCOrderStatusUI.isOpen());
+      } finally { a.done(); }
+    });
+
+    test('Danh sách: mới nhất trước; mã đơn, khách, giờ, số món, tổng tiền; nhãn tiếng Việt đúng cho cả 4 trạng thái', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o1 = await addOrder(a, 'Nguyễn Văn An', []);
+        var o2 = await addOrder(a, 'Trần Thị Bích', [{ to: 'sending' }], [[SP3, 1]], 'bank_transfer');
+        var o3 = await addOrder(a, 'Lê Hoàng', [{ to: 'sending' }, { to: 'delivered' }], [[SP2, 3]]);
+        var o4 = await addOrder(a, 'Phạm Minh Tuấn', CANCEL_AFTER_SEND, [[SP1, 1]]);
+        await openOrders(a);
+        var cs = cardsOf(a);
+        eq(cs.map(function (c) { return c.getAttribute('data-id'); }), [String(o4.id), String(o3.id), String(o2.id), String(o1.id)], 'mới nhất trước');
+        eq(cs.map(function (c) { return c.querySelector('.os-badge').textContent; }), ['Đã bị hủy', 'Đã gửi thành công', 'Đang gửi', 'Chưa gửi']);
+        eq(cs.map(function (c) { return c.querySelector('.os-badge').className.split('os-badge--')[1]; }), ['cancelled', 'delivered', 'sending', 'not_sent']);
+        eq(cs[3].querySelector('.os-card__code').textContent, o1.code);
+        assert(cs[3].querySelector('.os-card__meta').textContent.indexOf('Nguyễn Văn An') > -1, 'tên khách');
+        assert(/\d{2}:\d{2} \d{2}\/\d{2}\/\d{4}/.test(cs[3].querySelector('.os-card__meta').textContent), 'giờ: ' + cs[3].querySelector('.os-card__meta').textContent);
+        eq(cs[3].querySelector('.os-card__qty').textContent, '2 món');
+        eq(norm(cs[3].querySelector('.os-card__total').textContent), '72.000 ₫');
+        eq(norm(cs[1].querySelector('.os-card__total').textContent), '135.000 ₫');
+        assert(cs[0].getAttribute('aria-label').indexOf('trạng thái Đã bị hủy') > -1, 'aria-label thẻ');
+      } finally { a.done(); }
+    });
+
+    test('Bộ lọc theo trạng thái: đếm đúng, lọc đúng, aria-pressed, thông báo khi rỗng, "Tất cả" khôi phục', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        await addOrder(a, 'A An', []); await addOrder(a, 'B Bình', []); await addOrder(a, 'C Cường', [{ to: 'sending' }]);
+        await addOrder(a, 'D Dũng', [{ to: 'cancelled', reason: 'damaged' }]);
+        await openOrders(a);
+        var chip = function (s) { return a.d.querySelector('.os-chip[data-filter="' + s + '"]'); };
+        eq(['all', 'not_sent', 'sending', 'delivered', 'cancelled'].map(function (s) { return chip(s).querySelector('.os-chip__count').textContent; }), ['4', '2', '1', '0', '1']);
+        eq(chip('all').getAttribute('aria-pressed'), 'true');
+        chip('not_sent').click();
+        eq(cardsOf(a).length, 2); eq(chip('not_sent').getAttribute('aria-pressed'), 'true'); eq(chip('all').getAttribute('aria-pressed'), 'false');
+        assert(a.d.activeElement === chip('not_sent'), 'focus giữ ở nút lọc');
+        assert(cardsOf(a).every(function (c) { return c.querySelector('.os-badge').textContent === 'Chưa gửi'; }));
+        chip('delivered').click();
+        eq(cardsOf(a).length, 0); assert(a.d.querySelector('.os-none').textContent.indexOf('Đã gửi thành công') > -1, 'thông báo rỗng');
+        chip('cancelled').click(); eq(cardsOf(a).length, 1);
+        chip('all').click(); eq(cardsOf(a).length, 4);
+      } finally { a.done(); }
+    });
+
+    test('Chi tiết: tiến trình đúng cho từng trạng thái, thông tin khách/thanh toán/món; quay lại danh sách trả focus vào thẻ', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o1 = await addOrder(a, 'Nguyễn Văn An', []);
+        var o2 = await addOrder(a, 'Trần Thị Bích', [{ to: 'sending' }], [[SP3, 1]], 'bank_transfer');
+        var o3 = await addOrder(a, 'Lê Hoàng', [{ to: 'sending' }, { to: 'delivered' }]);
+        var o4 = await addOrder(a, 'Phạm Minh Tuấn', CANCEL_AFTER_SEND);
+        await openOrders(a);
+        var expectSteps = {};
+        expectSteps[o1.id] = ['not_sent:current', 'sending:upcoming', 'delivered:upcoming'];
+        expectSteps[o2.id] = ['not_sent:done', 'sending:current', 'delivered:upcoming'];
+        expectSteps[o3.id] = ['not_sent:done', 'sending:done', 'delivered:done'];
+        expectSteps[o4.id] = ['not_sent:done', 'sending:done', 'cancelled:cancelled'];
+        for (var o of [o1, o2, o3, o4]) {
+          await openCard(a, o.id);
+          eq(a.d.querySelector('.os-detail__code').textContent, o.code);
+          eq([].map.call(a.d.querySelectorAll('.os-step'), function (st) { return st.getAttribute('data-status') + ':' + st.className.split('os-step--')[1]; }), expectSteps[o.id], 'tiến trình ' + o.code);
+          assert(a.d.activeElement === a.d.querySelector('.os-detail__code'), 'focus vào mã đơn');
+          a.d.querySelector('.os-back').click(); await waitFor(function () { return cardsOf(a).length > 0; }); await wait(30);
+          assert(a.d.activeElement === a.d.querySelector('.os-card[data-id="' + o.id + '"]'), 'focus quay về thẻ đơn');
+        }
+        await openCard(a, o2.id);
+        var info = a.d.querySelector('.os-info').textContent;
+        ['Trần Thị Bích', '0912345678', '12 Nguyễn Huệ, Quận 1, TP.HCM', 'Ít cay', 'Chuyển khoản ngân hàng', 'Chờ chuyển khoản', 'Combo Giảm 10 × 1', '-10%', '85.500'].forEach(function (t) { assert(info.indexOf(t) > -1, 'thiếu: ' + t); });
+        await openCard0(a, o4.id);
+      } finally { a.done(); }
+      async function openCard0(a, id) {
+        a.d.querySelector('.os-back').click(); await waitFor(function () { return cardsOf(a).length > 0; });
+        await openCard(a, id);
+        var step = a.d.querySelector('.os-step--cancelled');
+        assert(step.textContent.indexOf('Lý do: Tai nạn') > -1 && step.textContent.indexOf('Xe giao hàng va chạm') > -1, 'lý do + ghi chú: ' + step.textContent);
+        assert(/\d{2}:\d{2} \d{2}\/\d{2}\/\d{4}/.test(step.textContent), 'giờ hủy');
+        eq(a.d.querySelectorAll('.os-step .sr-only').length, 3, 'mỗi bước có chữ cho trình đọc màn hình');
+      }
+    });
+
+    test('Vòng đời đầy đủ: Chưa gửi -> Đang gửi -> Đã gửi thành công (xác nhận 2 bước); lưu DB + lịch sử + sự kiện', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', []);
+        var events = []; a.w.addEventListener('order:status-changed', function (e) { events.push(e.detail); });
+        await openOrders(a); await openCard(a, o.id);
+        eq([].map.call(a.d.querySelectorAll('.os-actions [data-to]'), function (b) { return b.getAttribute('data-to') + '=' + b.textContent; }),
+          ['sending=Bắt đầu gửi hàng', 'cancelled=Hủy đơn']);
+        actionBtn(a, 'sending').click();
+        assert(await waitStatus(a, 'sending'), 'phải sang Đang gửi');
+        assert(flashText(a).indexOf('Đang gửi') > -1 && flashText(a).indexOf(o.code) > -1, 'thông báo: ' + flashText(a));
+        eq(a.d.querySelector('.os-step--current').getAttribute('data-status'), 'sending');
+        eq([].map.call(a.d.querySelectorAll('.os-actions [data-to]'), function (b) { return b.getAttribute('data-to'); }), ['delivered', 'cancelled']);
+        actionBtn(a, 'delivered').click(); await wait(30);
+        assert(confirmBtn(a) && a.d.querySelector('.os-panel').textContent.indexOf('không thể hoàn tác') > -1, 'hỏi xác nhận');
+        eq((await a.w.KFCOrders.getOrder(o.id)).status, 'sending', 'chưa xác nhận thì chưa đổi');
+        confirmBtn(a).click();
+        assert(await waitStatus(a, 'delivered'));
+        eq(a.d.querySelectorAll('.os-actions [data-to]').length, 0, 'hết nút');
+        assert(a.d.querySelector('.os-actions').textContent.indexOf('đã kết thúc') > -1);
+        eq([].map.call(a.d.querySelectorAll('.os-step'), function (st) { return st.className.split('os-step--')[1]; }), ['done', 'done', 'done']);
+        var got = await a.w.KFCOrders.getOrder(o.id);
+        eq([got.status, got.history.map(function (h) { return h.from_status + '>' + h.to_status; })], ['delivered', ['not_sent>sending', 'sending>delivered']]);
+        eq(events.map(function (e) { return [e.code, e.from, e.to]; }), [[o.code, 'not_sent', 'sending'], [o.code, 'sending', 'delivered']]);
+        a.d.querySelector('.os-back').click(); await waitFor(function () { return cardsOf(a).length; });
+        eq(cardsOf(a)[0].querySelector('.os-badge').textContent, 'Đã gửi thành công', 'danh sách phản ánh trạng thái mới');
+      } finally { a.done(); }
+    });
+
+    test('Hủy đơn: bắt buộc chọn lý do; chọn Tai nạn/Hư hỏng + ghi chú; lưu DB; hiển thị trong tiến trình', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', [{ to: 'sending' }]); var o2 = await addOrder(a, 'Trần Thị Bích', []);
+        await openOrders(a); await openCard(a, o.id);
+        actionBtn(a, 'cancelled').click(); await wait(30);
+        eq([].map.call(a.d.querySelectorAll('input[name=cancel-reason]'), function (r) { return r.nextElementSibling.textContent; }), ['Tai nạn', 'Hư hỏng']);
+        var called = 0; var orig = a.w.KFCOrders.updateOrderStatus; a.w.KFCOrders.updateOrderStatus = function () { called++; return orig.apply(this, arguments); };
+        confirmBtn(a).click(); await wait(50);
+        eq(called, 0, 'chưa chọn lý do thì không được gọi');
+        var re = a.d.querySelector('.os-field-error'); assert(re && !re.hidden && re.textContent.indexOf('lý do hủy') > -1, 'thông báo thiếu lý do');
+        assert(a.d.activeElement === a.d.querySelector('input[name=cancel-reason]'), 'focus vào lý do đầu');
+        eq(a.d.querySelector('input[name=cancel-reason]').getAttribute('aria-describedby'), 'os-reason-error');
+        a.d.querySelectorAll('input[name=cancel-reason]')[0].click();
+        assert(re.hidden, 'chọn xong thì bỏ lỗi');
+        a.d.getElementById('os-cancel-note').value = '  Xe giao hàng va chạm  ';
+        confirmBtn(a).click();
+        assert(await waitStatus(a, 'cancelled'));
+        assert(flashText(a).indexOf('Đã bị hủy') > -1);
+        var step = a.d.querySelector('.os-step--cancelled');
+        assert(step.textContent.indexOf('Lý do: Tai nạn') > -1 && step.textContent.indexOf('Xe giao hàng va chạm') > -1);
+        var got = await a.w.KFCOrders.getOrder(o.id);
+        eq([got.status, got.cancel_reason, got.history[1].note, got.history[1].from_status], ['cancelled', 'accident', 'Xe giao hàng va chạm', 'sending']);
+        // hủy từ "Chưa gửi" với lý do "Hư hỏng"
+        a.d.querySelector('.os-back').click(); await waitFor(function () { return cardsOf(a).length; });
+        await openCard(a, o2.id); actionBtn(a, 'cancelled').click(); await wait(30);
+        a.d.querySelectorAll('input[name=cancel-reason]')[1].click(); confirmBtn(a).click();
+        assert(await waitStatus(a, 'cancelled'));
+        var got2 = await a.w.KFCOrders.getOrder(o2.id);
+        eq([got2.cancel_reason, got2.history[0].from_status, got2.history[0].note], ['damaged', 'not_sent', '']);
+        assert(a.d.querySelector('.os-step--cancelled').textContent.indexOf('Hư hỏng') > -1);
+      } finally { a.done(); }
+    });
+
+    test('Quay lại ở bước xác nhận (giao thành công / hủy) không đổi gì và trả focus về nút', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', [{ to: 'sending' }]);
+        await openOrders(a); await openCard(a, o.id);
+        actionBtn(a, 'delivered').click(); await wait(30);
+        a.d.querySelector('.os-panel .btn-outline').click(); await wait(30);
+        assert(a.d.querySelector('.os-panel').hidden && !a.d.querySelector('.os-actions__row').hidden, 'đóng khung xác nhận');
+        assert(a.d.activeElement === actionBtn(a, 'delivered'), 'focus về nút gốc');
+        actionBtn(a, 'cancelled').click(); await wait(30);
+        a.d.querySelector('.os-panel .btn-outline').click(); await wait(30);
+        assert(a.d.activeElement === actionBtn(a, 'cancelled'));
+        eq((await a.w.KFCOrders.getOrder(o.id)).status, 'sending'); eq((await a.w.KFCOrders.getOrder(o.id)).history.length, 1);
+      } finally { a.done(); }
+    });
+
+    test('Ghi chú hủy quá 200 ký tự: báo lỗi ngay trên ô ghi chú, không gọi cập nhật', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', []);
+        await openOrders(a); await openCard(a, o.id); actionBtn(a, 'cancelled').click(); await wait(30);
+        var called = 0; var orig = a.w.KFCOrders.updateOrderStatus; a.w.KFCOrders.updateOrderStatus = function () { called++; return orig.apply(this, arguments); };
+        a.d.querySelector('input[name=cancel-reason]').click();
+        var note = a.d.getElementById('os-cancel-note'); note.value = new Array(260).join('x');
+        confirmBtn(a).click(); await wait(50);
+        eq(called, 0);
+        eq([note.getAttribute('aria-invalid'), note.getAttribute('aria-describedby')], ['true', 'os-note-error']);
+        assert(a.d.getElementById('os-note-error').textContent.indexOf('200') > -1); assert(a.d.activeElement === note);
+        note.dispatchEvent(new a.w.Event('input', { bubbles: true }));
+        assert(a.d.getElementById('os-note-error').hidden && !note.hasAttribute('aria-invalid'), 'sửa thì bỏ lỗi');
+      } finally { a.done(); }
+    });
+
+    test('Đơn đã kết thúc (đã gửi thành công / đã hủy): không còn nút chuyển trạng thái, chỉ có thông báo', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var d = await addOrder(a, 'Lê Hoàng', [{ to: 'sending' }, { to: 'delivered' }]); var c = await addOrder(a, 'Phạm Minh Tuấn', CANCEL_AFTER_SEND);
+        await openOrders(a);
+        for (var o of [d, c]) {
+          await openCard(a, o.id);
+          eq(a.d.querySelectorAll('.os-actions button').length, 0, 'không có nút ' + o.code);
+          assert(/đã kết thúc, không thể đổi trạng thái/.test(a.d.querySelector('.os-actions').textContent));
+          a.d.querySelector('.os-back').click(); await waitFor(function () { return cardsOf(a).length; });
+        }
+      } finally { a.done(); }
+    });
+
+    test('Xung đột: trạng thái đã đổi ở nơi khác -> cảnh báo, cập nhật hiển thị, không ghi đè', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', []);
+        await openOrders(a); await openCard(a, o.id);
+        await a.w.KFCOrders.updateOrderStatus({ orderId: o.id, to: 'sending' }); // "tab khác" đã chuyển sang Đang gửi
+        actionBtn(a, 'cancelled').click(); await wait(30);
+        a.d.querySelector('input[name=cancel-reason]').click(); confirmBtn(a).click();
+        assert(await waitFor(function () { return flashText(a).indexOf('đã thay đổi') > -1; }), 'cảnh báo: ' + flashText(a));
+        assert(flashText(a).indexOf('Đang gửi') > -1, 'nêu trạng thái hiện tại');
+        assert(a.d.querySelector('.os-flash').classList.contains('os-flash--warn'));
+        assert(await waitStatus(a, 'sending'), 'hiển thị trạng thái mới');
+        eq((await a.w.KFCOrders.getOrder(o.id)).status, 'sending', 'không bị hủy');
+        eq((await a.w.KFCOrders.getOrder(o.id)).history.length, 1);
+        assert(actionBtn(a, 'delivered'), 'hiện đúng các nút của trạng thái mới');
+      } finally { a.done(); }
+    });
+
+    test('Đang cập nhật: nút "Đang cập nhật…", khóa mọi nút, Esc/X/overlay không đóng, chỉ gọi một lần', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', []);
+        await openOrders(a); await openCard(a, o.id);
+        var release, calls = 0;
+        a.w.KFCOrders.updateOrderStatus = function (i) { calls++; return new Promise(function (r) { release = function () { r({ id: o.id, code: o.code, from: 'not_sent', to: i.to, reason: null, note: '', changedAt: 'x' }); }; }); };
+        var b = actionBtn(a, 'sending'); b.click(); b.click(); await wait(50);
+        eq(calls, 1, 'không gọi lần 2'); eq(b.textContent, 'Đang cập nhật…');
+        assert(Array.prototype.every.call(a.d.querySelectorAll('.os-actions button, .os-back'), function (x) { return x.disabled; }), 'khóa nút');
+        assert(a.$('orders-close').disabled, 'khóa nút X'); eq(odlg(a).getAttribute('aria-busy'), 'true');
+        key(a, 'Escape'); a.$('orders-overlay').click(); await wait(50);
+        assert(a.w.KFCOrderStatusUI.isOpen(), 'không đóng khi đang cập nhật');
+        release(); await wait(300);
+        assert(!a.$('orders-close').disabled && odlg(a).getAttribute('aria-busy') === 'false', 'mở khóa');
+      } finally { a.done(); }
+    });
+
+    test('Lỗi khi đổi trạng thái: mỗi loại lỗi báo đúng nguyên nhân, giữ nguyên trạng thái, mở khóa lại', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      var origError = a.w.console.error; a.w.console.error = function () {};
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', []);
+        await openOrders(a); await openCard(a, o.id);
+        var cases = [['sqljs_load_failed', 'Live Server'], ['storage_save_failed', 'lưu đơn hàng'], ['db_corrupt', 'bị hỏng'], ['invalid_transition', 'Không thể chuyển'], ['weird', 'Có lỗi xảy ra']];
+        for (var i = 0; i < cases.length; i++) {
+          (function (code) { a.w.KFCOrders.updateOrderStatus = function () { var e = new Error('Không thể chuyển từ X sang Y'); e.code = code; return Promise.reject(e); }; })(cases[i][0]);
+          actionBtn(a, 'sending').click(); await wait(80);
+          assert(actErr(a).indexOf(cases[i][1]) > -1, cases[i][0] + ' -> "' + actErr(a) + '"');
+          assert(!actionBtn(a, 'sending').disabled && actionBtn(a, 'sending').textContent === 'Bắt đầu gửi hàng', 'mở khóa lại');
+          assert(a.d.querySelector('.os-detail__head .os-badge').classList.contains('os-badge--not_sent'), 'trạng thái không đổi');
+        }
+        // đơn không còn tồn tại
+        a.w.KFCOrders.updateOrderStatus = function () { var e = new Error('x'); e.code = 'order_not_found'; return Promise.reject(e); };
+        actionBtn(a, 'sending').click(); await wait(80);
+        assert(a.d.querySelector('.os-state--error') && a.d.querySelector('.os-state__text').textContent.indexOf('Không tìm thấy đơn hàng') > -1, 'màn hình lỗi');
+        a.d.querySelector('.os-state--error .btn').click();
+        assert(await waitFor(function () { return cardsOf(a).length === 1; }), 'Thử lại quay về danh sách');
+      } finally { a.w.console.error = origError; a.done(); }
+    });
+
+    test('Không tải được SQLite/WebAssembly: màn hình lỗi, gợi ý Live Server, có nút Thử lại', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, status: true, wasmFail: true });
+      var origError = a.w.console.error; a.w.console.error = function () {};
+      try {
+        a.$('orders-toggle').click();
+        assert(await waitFor(function () { return a.d.querySelector('.os-state--error'); }), 'màn hình lỗi');
+        assert(a.d.querySelector('.os-state__text').textContent.indexOf('Live Server') > -1);
+        eq(a.d.querySelector('.os-state__text').getAttribute('role'), 'alert');
+        assert(a.d.activeElement === a.d.querySelector('.os-state__title'), 'focus vào tiêu đề lỗi');
+        var retry = a.d.querySelector('.os-state--error .btn'); assert(retry.textContent === 'Thử lại'); retry.click(); await wait(100);
+        assert(await waitFor(function () { return a.d.querySelector('.os-state--error'); }), 'vẫn lỗi vì wasm vẫn hỏng, nhưng không crash');
+        key(a, 'Escape'); await wait(50); assert(!a.w.KFCOrderStatusUI.isOpen());
+      } finally { a.w.console.error = origError; a.done(); }
+    });
+
+    test('XSS: tên khách/địa chỉ/ghi chú/tên món chứa HTML chỉ hiển thị là chữ (danh sách + chi tiết)', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var evil = '<img src=x onerror="window.__xss=1">';
+        var o = await a.w.KFCOrders.placeOrder({ items: [{ id: 'x', name: evil + ' món', price: 1000, qty: 1 }] },
+          { customer: { name: evil, phone: '0912345678', address: '<script>window.__xss=2<\/script> 12 Lê Lợi', note: '<b>đậm</b>' }, payment: { method: 'cod' } });
+        await a.w.KFCOrders.updateOrderStatus({ orderId: o.id, to: 'cancelled', reason: 'damaged', note: '<svg onload="window.__xss=3">' });
+        await openOrders(a);
+        assert(cardsOf(a)[0].querySelector('.os-card__meta').textContent.indexOf(evil) > -1, 'tên hiển thị nguyên văn');
+        await openCard(a, o.id); await wait(200);
+        eq(a.w.__xss, undefined, 'script đã chạy');
+        eq(a.d.querySelectorAll('img[src="x"], .orders-dialog svg[onload], .orders-dialog script, .os-info b').length, 0, 'phần tử độc hại được tạo');
+        assert(a.d.querySelector('.os-info').textContent.indexOf('<b>đậm</b>') > -1);
+        assert(a.d.querySelector('.os-step--cancelled').textContent.indexOf('<svg onload=') > -1);
+      } finally { a.done(); }
+    });
+
+    test('Đơn không có thông tin khách (đặt từ module Giỏ hàng cũ): hiển thị đúng và vẫn đổi trạng thái được', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await a.w.KFCOrders.placeOrder(stateOf(a, [[SP2, 1]])); // không có meta
+        await openOrders(a);
+        assert(cardsOf(a)[0].querySelector('.os-card__meta').textContent.indexOf('Khách không để lại thông tin') > -1);
+        await openCard(a, o.id);
+        assert(a.d.querySelector('.os-info').textContent.indexOf('không có thông tin người nhận') > -1);
+        eq(norm(a.d.querySelectorAll('.os-dl')[0] ? a.d.querySelectorAll('.os-dl')[0].textContent : ''), 'Phương thức—Tình trạng—', 'thanh toán hiển thị gạch ngang');
+        actionBtn(a, 'sending').click(); assert(await waitStatus(a, 'sending'));
+      } finally { a.done(); }
+    });
+
+    test('Nhiều đơn (40): danh sách đầy đủ, cuộn được, không tràn ngang', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        for (var i = 0; i < 40; i++) await a.w.KFCOrders.placeOrder(stateOf(a, [[SP2, 1 + (i % 3)]]), metaOf('Khách ' + (i + 1)));
+        await openOrders(a);
+        eq(cardsOf(a).length, 40); eq(a.d.querySelector('.os-chip[data-filter="all"] .os-chip__count').textContent, '40');
+        var body = a.$('orders-body'); assert(body.scrollHeight > body.clientHeight, 'phải cuộn được');
+        assert(a.d.documentElement.scrollWidth <= a.w.innerWidth, 'tràn ngang');
+        eq(cardsOf(a)[0].querySelector('.os-card__code').textContent.slice(-4), '0040', 'đơn mới nhất ở trên');
+      } finally { a.done(); }
+    });
+
+    test('Trạng thái được giữ sau khi đóng/mở lại hộp thoại và sau khi tải lại trang', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      var o = await addOrder(a, 'Nguyễn Văn An', []);
+      await openOrders(a); await openCard(a, o.id); actionBtn(a, 'sending').click(); assert(await waitStatus(a, 'sending'));
+      key(a, 'Escape'); await wait(50); await openOrders(a);
+      eq(cardsOf(a)[0].querySelector('.os-badge').textContent, 'Đang gửi', 'mở lại hộp thoại');
+      a.done();
+      var b = await load({ csv: FIXTURE, status: true, keepData: true });
+      try {
+        await openOrders(b);
+        eq(cardsOf(b)[0].querySelector('.os-badge').textContent, 'Đang gửi', 'sau khi tải lại trang');
+        await openCard(b, o.id);
+        eq(b.d.querySelectorAll('.os-step--done, .os-step--current').length, 2);
+      } finally { b.done(); }
+    });
+
+    test('Tích hợp với Thanh toán: đơn đặt qua luồng thanh toán xuất hiện trong "Đơn hàng" ở trạng thái "Chưa gửi" đúng khách', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, payment: true, status: true });
+      try {
+        addBtns(a)[0].click(); a.w.KFCCart.open(); await wait(300); a.$('cart-checkout').click(); await wait(100);
+        fill(a, VALID); submitBtn(a).click();
+        assert(await waitFor(function () { return onSuccessScreen(a); }), 'thanh toán xong');
+        var code = a.d.querySelector('.co-success__code').textContent;
+        a.$('checkout-close').click(); await wait(50);
+        await openOrders(a);
+        eq(cardsOf(a).length, 1);
+        eq([cardsOf(a)[0].querySelector('.os-card__code').textContent, cardsOf(a)[0].querySelector('.os-badge').textContent], [code, 'Chưa gửi']);
+        assert(cardsOf(a)[0].querySelector('.os-card__meta').textContent.indexOf('Nguyễn Văn An') > -1);
+      } finally { a.done(); }
+    });
+
+    test('Module Trạng thái đơn hàng chạy độc lập: Giỏ hàng/Thanh toán vẫn hoạt động khi gỡ nó', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, payment: true });
+      try {
+        eq(a.$('orders-toggle').hidden, true);
+        addBtns(a)[0].click(); a.w.KFCCart.open(); await wait(300); a.$('cart-checkout').click(); await wait(100);
+        fill(a, VALID); submitBtn(a).click();
+        assert(await waitFor(function () { return onSuccessScreen(a); }));
+        eq((await a.w.KFCOrders.listOrders())[0].status, 'not_sent', 'đơn vẫn có trạng thái mặc định');
+      } finally { a.done(); }
+    });
+
+    [[1440, 2], [1024, 2], [768, 2], [390, 1], [375, 1]].forEach(function (c) {
+      test('Đơn hàng responsive ' + c[0] + 'px: không tràn ngang, ' + c[1] + ' cột chi tiết, nút bấm được, biểu mẫu hủy vừa khít', async function () {
+        localStorage.clear();
+        var a = await load({ csv: FIXTURE, status: true, width: c[0] });
+        try {
+          var o = await addOrder(a, 'Nguyễn Văn An', [{ to: 'sending' }], [[SP1, 2], [SP3, 1]], 'bank_transfer'); await addOrder(a, 'Trần Thị Bích', []);
+          var tg = a.$('orders-toggle').getBoundingClientRect();
+          assert(tg.right <= a.w.innerWidth && tg.left >= 0 && tg.width >= 40, 'nút Đơn hàng bị cắt/nhỏ');
+          eq(a.w.getComputedStyle(a.d.querySelector('.orders-toggle__label')).display !== 'none', c[0] >= 768, 'nhãn nút');
+          await openOrders(a);
+          var d = odlg(a).getBoundingClientRect();
+          assert(d.left >= -1 && d.right <= a.w.innerWidth + 1 && d.height <= a.w.innerHeight + 1, 'hộp thoại bị cắt');
+          assert(a.d.documentElement.scrollWidth <= a.w.innerWidth && a.$('orders-body').scrollWidth <= a.$('orders-body').clientWidth + 1, 'danh sách tràn ngang');
+          if (c[0] < 768) { eq(Math.round(d.width), c[0]); eq(Math.round(d.height), 800); }
+          var chips = [].slice.call(a.d.querySelectorAll('.os-chip')).every(function (ch) { var r = ch.getBoundingClientRect(); return r.right <= a.w.innerWidth && r.left >= 0; });
+          assert(chips, 'bộ lọc bị cắt');
+          await openCard(a, o.id);
+          assert(a.$('orders-body').scrollWidth <= a.$('orders-body').clientWidth + 1, 'chi tiết tràn ngang');
+          eq(a.w.getComputedStyle(a.d.querySelector('.os-layout')).gridTemplateColumns.split(' ').length, c[1], 'số cột');
+          actionBtn(a, 'cancelled').click(); await wait(30);
+          assert(a.$('orders-body').scrollWidth <= a.$('orders-body').clientWidth + 1, 'form hủy tràn ngang');
+          var cb = confirmBtn(a); cb.scrollIntoView(); await wait(30);
+          var r = cb.getBoundingClientRect(); assert(r.left >= 0 && r.right <= a.w.innerWidth && r.width > 120, 'nút xác nhận hủy bị cắt');
+          var long = a.d.getElementById('os-cancel-note'); eq(a.w.getComputedStyle(long).fontSize, '16px', 'cỡ chữ ô ghi chú');
+        } finally { a.done(); }
+      });
+    });
+
+    test('DESIGN.md: Arial, chỉ weight 400/700, màu chủ đạo #d71920, nền xám #f5f5f5, huy hiệu đạt tương phản >= 4.5:1, vùng bấm >= 44px', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var o = await addOrder(a, 'Nguyễn Văn An', []); await addOrder(a, 'B Bình', [{ to: 'sending' }]); await addOrder(a, 'C Cường', [{ to: 'sending' }, { to: 'delivered' }]); await addOrder(a, 'D Dũng', CANCEL_AFTER_SEND);
+        await openOrders(a);
+        var cs = function (e) { return a.w.getComputedStyle(e); };
+        assert(cs(odlg(a)).fontFamily.indexOf('Arial') === 0, 'font: ' + cs(odlg(a)).fontFamily);
+        assert(odlg(a).getBoundingClientRect().width <= 1200, 'rộng quá 1200px');
+        eq(cs(odlg(a)).backgroundColor, 'rgb(255, 255, 255)');
+        eq(cs(a.d.querySelector('.os-chip.is-active')).backgroundColor, 'rgb(215, 25, 32)');
+        eq(cs(a.d.querySelector('.os-card__total')).color, 'rgb(215, 25, 32)');
+        var weights = [].map.call(odlg(a).querySelectorAll('*'), function (e) { return cs(e).fontWeight; });
+        assert(weights.every(function (w) { return w === '400' || w === '700'; }), 'chỉ dùng weight 400/700: ' + weights.filter(function (w) { return w !== '400' && w !== '700'; }).join(','));
+        a.d.querySelectorAll('.os-badge').forEach(function (b) {
+          var ratio = contrast(cs(b).color, cs(b).backgroundColor);
+          assert(ratio >= 4.5, 'tương phản huy hiệu ' + b.textContent + ' = ' + ratio.toFixed(2));
+        });
+        eq(new Set([].map.call(a.d.querySelectorAll('.os-badge'), function (b) { return b.textContent; })).size, 4, '4 huy hiệu khác nhau về chữ (không chỉ khác màu)');
+        assert(a.d.querySelector('.os-chip').getBoundingClientRect().height >= 36, 'nút lọc quá thấp');
+        await openCard(a, o.id);
+        eq(cs(a.d.querySelector('.os-box')).backgroundColor, 'rgb(245, 245, 245)');
+        [].forEach.call(a.d.querySelectorAll('.os-actions .btn'), function (b) { assert(b.getBoundingClientRect().height >= 44, 'nút hành động < 44px: ' + b.textContent); });
+        eq(cs(actionBtn(a, 'sending')).backgroundColor, 'rgb(215, 25, 32)');
+        assert(cs(actionBtn(a, 'cancelled')).color === 'rgb(215, 25, 32)' && cs(actionBtn(a, 'cancelled')).borderTopColor === 'rgb(215, 25, 32)', 'nút Hủy viền đỏ');
+      } finally { a.done(); }
+    });
+
+    test('Bàn phím: Tab/Shift+Tab xoay vòng trong hộp thoại; thẻ đơn và bộ lọc là nút thật; Esc đóng', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        await addOrder(a, 'Nguyễn Văn An', []);
+        await openOrders(a);
+        eq(a.d.querySelector('.os-card').tagName, 'BUTTON'); eq(a.d.querySelector('.os-chip').tagName, 'BUTTON');
+        a.d.querySelector('.os-card').focus(); key(a, 'Tab'); await wait(10);
+        assert(a.d.activeElement === a.$('orders-close'), 'Tab ở cuối quay về nút đóng: ' + (a.d.activeElement.id || a.d.activeElement.className));
+        key(a, 'Tab', { shiftKey: true }); await wait(10);
+        assert(a.d.activeElement === a.d.querySelector('.os-card'), 'Shift+Tab ở đầu nhảy xuống cuối');
       } finally { a.done(); }
     });
 

@@ -76,13 +76,13 @@ tests/                  Test (harness.js, pricing / cart-store / discount-store 
 ## 6. Chạy test
 
 ```bash
-node tests/run.js        # 175 test (giá, giảm giá, logic giỏ, CSV, dữ liệu menu, lưu đơn bằng SQLite thật)
+node tests/run.js        # 391 test (giá, giảm giá, logic giỏ, CSV, dữ liệu menu, lưu đơn bằng SQLite thật, thanh toán, trạng thái đơn hàng)
 ```
 
 Chạy trong trình duyệt (qua Live Server hoặc `python -m http.server`, không mở bằng file://):
 
-- `tests/index.html`: 98 test logic.
-- `tests/ui.html`: 42 test giao diện (gồm luồng đặt hàng với SQLite và IndexedDB thật). Trang nạp `index.html` trong iframe và thao tác như người dùng.
+- `tests/index.html`: 231 test logic.
+- `tests/ui.html`: 97 test giao diện (gồm luồng đặt hàng với SQLite và IndexedDB thật). Các test của Giỏ hàng chạy với module Thanh toán bị gỡ ra để kiểm tra độc lập; phần Thanh toán xem `docs/MODULE-02-PAYMENT.md`. Trang nạp `index.html` trong iframe và thao tác như người dùng.
 
 Phạm vi test:
 
@@ -136,6 +136,8 @@ Muốn có tệp thật, bấm **Lưu file orders.db** trên màn hình đặt h
 Tệp này là SQLite chuẩn, mở được bằng DB Browser for SQLite, `sqlite3`, Python `sqlite3`…
 
 ### Cấu trúc bảng
+
+> Các module sau mở rộng `orders.db` bằng migration tự động: module Thanh Toán thêm 6 cột nullable vào `orders` (`customer_*`, `payment_*`, xem `docs/MODULE-02-PAYMENT.md`); module Trạng Thái Đơn Hàng thêm `status`, `cancel_reason`, `status_updated_at` và bảng `order_status_history` (xem `docs/MODULE-03-ORDER-STATUS.md`). Bảng dưới đây là phần của module Giỏ hàng.
 
 ```sql
 CREATE TABLE orders (
@@ -201,6 +203,6 @@ GROUP BY o.id ORDER BY o.id DESC;
 
 ## 9. Giới hạn đã biết
 
-- Đơn hàng chưa có thông tin khách (tên, số điện thoại, địa chỉ), phương thức thanh toán và trạng thái đơn; các phần này thuộc module Thanh Toán và Trạng Thái Đơn Hàng. Khi đó chỉ cần thêm cột/bảng vào `orders.db`.
+- Khi chạy riêng (không có module Thanh Toán), đơn hàng không có thông tin khách và phương thức thanh toán. Khi có module Thanh Toán, bấm **Đặt hàng** sẽ đi qua bước thanh toán (xem `docs/MODULE-02-PAYMENT.md`). Trạng thái đơn hàng do module 3 quản lý (`docs/MODULE-03-ORDER-STATUS.md`).
 - `orders.db` nằm trong trình duyệt của từng máy; muốn gom đơn từ nhiều máy cần backend, mà dự án này không có.
 - Giỏ hàng lưu theo từng trình duyệt (localStorage), không đồng bộ giữa các thiết bị vì dự án không có backend.

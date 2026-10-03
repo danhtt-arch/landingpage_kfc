@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="css/style.css">
   <link rel="stylesheet" href="css/cart.css">
   <link rel="stylesheet" href="css/payment.css">
+  <link rel="stylesheet" href="css/order-status.css">
 
   <!-- Favicon -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍗</text></svg>">
@@ -33,6 +34,12 @@
       </nav>
 
       <div class="header-actions">
+        <!-- Module Trạng thái đơn hàng: nút xem đơn (được hiện bởi js/order-status/order-status-ui.js) -->
+        <button type="button" class="orders-toggle" id="orders-toggle" aria-label="Xem đơn hàng" aria-haspopup="dialog" aria-controls="orders-dialog" aria-expanded="false" hidden>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9"/></svg>
+          <span class="orders-toggle__label">Đơn hàng</span>
+        </button>
+
         <!-- Module Giỏ hàng: nút mở giỏ + badge số lượng -->
         <button type="button" class="cart-toggle" id="cart-toggle" aria-label="Mở giỏ hàng, hiện có 0 món" aria-haspopup="dialog" aria-controls="cart-drawer" aria-expanded="false">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
@@ -262,6 +269,18 @@
     <div class="checkout__body" id="checkout-body"></div>
   </section>
 
+  <!-- Module Trạng thái đơn hàng: hộp thoại (nội dung được vẽ bởi js/order-status/order-status-ui.js) -->
+  <div class="orders-overlay" id="orders-overlay" hidden></div>
+  <section class="orders-dialog" id="orders-dialog" role="dialog" aria-modal="true" aria-labelledby="orders-title" aria-hidden="true" tabindex="-1" hidden>
+    <header class="orders-dialog__header">
+      <h2 id="orders-title">Đơn hàng</h2>
+      <button type="button" class="orders-dialog__close" id="orders-close" aria-label="Đóng danh sách đơn hàng">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </header>
+    <div class="orders-dialog__body" id="orders-body"></div>
+  </section>
+
   <!-- Thông báo (toast) và vùng đọc cho trình đọc màn hình -->
   <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
 
@@ -269,6 +288,7 @@
   <script src="js/csv.js"></script>
   <script src="js/pricing.js"></script>
   <script src="js/cart/cart-store.js"></script>
+  <script src="js/orders/order-status.js"></script>
   <script src="js/orders/order-service.js"></script>
   <script src="js/orders/db-storage.js"></script>
   <script src="js/orders/orders-boot.js"></script>
@@ -277,6 +297,7 @@
   <script src="js/payment/payment-config.js"></script>
   <script src="js/payment/payment-service.js"></script>
   <script src="js/payment/payment-ui.js"></script>
+  <script src="js/order-status/order-status-ui.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
