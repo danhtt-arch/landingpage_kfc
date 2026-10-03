@@ -516,17 +516,24 @@
 
     box.appendChild(make('p', 'co-saved' + (order.persistent ? '' : ' co-saved--warn'),
       order.persistent
-        ? 'Đơn hàng đã được lưu vào cơ sở dữ liệu SQLite (orders.db) trên trình duyệt này.'
-        : 'Trình duyệt không cho lưu lâu dài, nên đơn chỉ được giữ tạm trong phiên này. Hãy bấm "Lưu file orders.db" để giữ lại.'));
+        ? '✓ Đơn hàng đã được lưu tự động trong trình duyệt này. Bạn có thể xem lại ở nút "Đơn hàng" trên đầu trang.'
+        : 'Trình duyệt không cho lưu lâu dài, nên đơn chỉ được giữ tạm trong phiên này. Hãy lưu ra file orders.db ở bên dưới để giữ lại.'));
+
+    if (window.KFCFileSyncUI) {
+      // Lưu ra file orders.db thật (tự động sau khi chọn file một lần); nút tải bản sao nằm trong khung này
+      box.appendChild(window.KFCFileSyncUI.create({ downloadClass: 'co-save' }));
+    }
 
     var actions = make('div', 'co-actions');
-    var save = make('button', 'btn btn-outline co-save', 'Lưu file orders.db');
-    save.type = 'button';
-    save.addEventListener('click', function () { saveDb(save); });
+    if (!window.KFCFileSyncUI) {
+      var save = make('button', 'btn btn-outline co-save', 'Tải về bản sao orders.db');
+      save.type = 'button';
+      save.addEventListener('click', function () { saveDb(save); });
+      actions.appendChild(save);
+    }
     var cont = make('button', 'btn btn-primary co-continue', 'Tiếp tục mua sắm');
     cont.type = 'button';
     cont.addEventListener('click', goToMenu);
-    actions.appendChild(save);
     actions.appendChild(cont);
     box.appendChild(actions);
 

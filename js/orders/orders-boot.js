@@ -47,6 +47,28 @@
   var storage = Storage.createBrowserStorage();
   var service = Service.createOrderService({ loadSqlJs: loadSqlJs, storage: storage, lock: lock });
 
+  // Tự động ghi orders.db ra file thật (nếu người dùng đã chọn file). Không có API này thì chỉ lưu trong trình duyệt.
+  var FileSync = window.KFCFileSync;
+  var fileSync = FileSync ? FileSync.createFileSync({
+    isSupported: function () { return typeof window.showSaveFilePicker === 'function' && window.isSecureContext !== false; },
+    picker: function (options) { return window.showSaveFilePicker(options); },
+    handleStore: Storage.createHandleStore(),
+    getBytes: function () { return service.exportDb(); },
+    inspect: function (bytes) { return service.inspectDb(bytes); },
+    importBytes: function (bytes) { return service.importDb(bytes); },
+    fileName: Service.DB_FILE_NAME
+  }) : null;
+  if (fileSync) fileSync.init();
+
+  /** Chạy thao tác ghi rồi cập nhật file (nếu đã liên kết). Lỗi ghi file không làm hỏng đơn: chỉ gắn kết quả vào `file`. */
+  async function withFileSync(promise) {
+    var result = await promise;
+    if (result && typeof result === 'object') {
+      result.file = fileSync ? await fileSync.sync() : { status: 'unsupported' };
+    }
+    return result;
+  }
+
   /**
    * Lưu orders.db ra tệp thật. Dùng hộp thoại "Lưu thành..." nếu trình duyệt hỗ trợ
    * (Chrome/Edge), nếu không thì tải xuống.
@@ -82,11 +104,14 @@
   }
 
   window.KFCOrders = {
-    placeOrder: service.placeOrder,
+    placeOrder: function (state, meta) { return withFileSync(service.placeOrder(state, meta)); },
     listOrders: service.listOrders,
     exportDb: service.exportDb,
     getOrder: service.getOrder,
-    updateOrderStatus: service.updateOrderStatus,
+    updateOrderStatus: function (input) { return withFileSync(service.updateOrderStatus(input)); },
+    fileSync: fileSync,
+    inspectDb: service.inspectDb,
+    importDb: service.importDb,
     saveToFile: saveToFile,
     storage: storage
   };

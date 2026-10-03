@@ -105,7 +105,62 @@
     return api;
   }
 
+  /**
+   * Nhớ "handle" của file orders.db mà người dùng đã chọn (để lần mở trang sau vẫn tự ghi được).
+   * Handle là đối tượng có thể lưu trong IndexedDB. Nếu IndexedDB không dùng được thì chỉ nhớ trong phiên.
+   */
+  function createHandleStore(idbFactory) {
+    var factory = idbFactory !== undefined ? idbFactory : (typeof root.indexedDB !== 'undefined' ? root.indexedDB : null);
+    var HANDLE_DB = 'kfc-orders-file';
+    var HANDLE_STORE = 'handles';
+    var memory = null;
+
+    function openHandleDb() {
+      return new Promise(function (resolve, reject) {
+        if (!factory) { reject(new Error('IndexedDB không khả dụng')); return; }
+        var req;
+        try { req = factory.open(HANDLE_DB, 1); } catch (e) { reject(e); return; }
+        req.onupgradeneeded = function () { req.result.createObjectStore(HANDLE_STORE); };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error || new Error('Không mở được IndexedDB')); };
+        req.onblocked = function () { reject(new Error('IndexedDB bị chặn')); };
+      });
+    }
+
+    async function run(mode, fn) {
+      var db = await openHandleDb();
+      try {
+        return await new Promise(function (resolve, reject) {
+          var tx = db.transaction(HANDLE_STORE, mode);
+          var holder = {};
+          try { fn(tx.objectStore(HANDLE_STORE), holder); } catch (e) { reject(e); return; }
+          tx.oncomplete = function () { resolve(holder.result); };
+          tx.onerror = function () { reject(tx.error || new Error('Lỗi giao dịch IndexedDB')); };
+          tx.onabort = function () { reject(tx.error || new Error('Giao dịch IndexedDB bị hủy')); };
+        });
+      } finally { db.close(); }
+    }
+
+    return {
+      get: async function () {
+        try {
+          var h = await run('readonly', function (store, hold) { var r = store.get(KEY); r.onsuccess = function () { hold.result = r.result; }; });
+          return h || memory;
+        } catch (e) { return memory; }
+      },
+      set: async function (handle) {
+        memory = handle;
+        try { await run('readwrite', function (store) { store.put(handle, KEY); }); } catch (e) { console.warn('[KFC Orders] Không nhớ được liên kết file (chỉ nhớ trong phiên này):', e); }
+      },
+      clear: async function () {
+        memory = null;
+        try { await run('readwrite', function (store) { store.delete(KEY); }); } catch (e) { /* bỏ qua */ }
+      }
+    };
+  }
+
   return {
+    createHandleStore: createHandleStore,
     createBrowserStorage: createBrowserStorage,
     createMemoryStorage: createMemoryStorage,
     IDB_NAME: IDB_NAME

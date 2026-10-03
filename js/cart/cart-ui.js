@@ -509,14 +509,19 @@
 
     var note = make('p', 'order-success__note' + (order.persistent ? '' : ' order-success__note--warn'),
       order.persistent
-        ? 'Đơn hàng đã được lưu vào cơ sở dữ liệu SQLite (orders.db) trên trình duyệt này.'
-        : 'Trình duyệt không cho lưu lâu dài, nên đơn chỉ được giữ tạm trong phiên này. Hãy bấm "Lưu file orders.db" để giữ lại.');
+        ? '✓ Đơn hàng đã được lưu tự động trong trình duyệt này.'
+        : 'Trình duyệt không cho lưu lâu dài, nên đơn chỉ được giữ tạm trong phiên này. Hãy lưu ra file orders.db ở bên dưới để giữ lại.');
     box.appendChild(note);
 
-    var save = make('button', 'btn btn-primary order-success__save', 'Lưu file orders.db');
-    save.type = 'button';
-    save.addEventListener('click', function () { saveDbFile(save); });
-    box.appendChild(save);
+    if (window.KFCFileSyncUI) {
+      // Lưu ra file orders.db thật (tự động sau khi chọn file một lần); nút tải bản sao nằm trong khung này
+      box.appendChild(window.KFCFileSyncUI.create({ downloadClass: 'order-success__save' }));
+    } else {
+      var save = make('button', 'btn btn-primary order-success__save', 'Tải về bản sao orders.db');
+      save.type = 'button';
+      save.addEventListener('click', function () { saveDbFile(save); });
+      box.appendChild(save);
+    }
 
     var cont = make('button', 'cart-link-btn order-success__continue', 'Tiếp tục mua sắm');
     cont.type = 'button';

@@ -73,25 +73,17 @@
     // Trạng thái đơn hàng (module Trạng Thái Đơn Hàng). Đơn cũ tự nhận giá trị mặc định 'not_sent'.
     ['orders', 'status', "TEXT NOT NULL DEFAULT 'not_sent' CHECK (status IN (" + Status.IDS.map(sqlQuote).join(', ') + '))'],
     ['orders', 'cancel_reason', 'TEXT CHECK (cancel_reason IS NULL OR cancel_reason IN (' + Status.CANCEL_REASONS.map(sqlQuote).join(', ') + '))'],
-    ['orders', 'status_updated_at', 'TEXT']
+    ['orders', 'status_updated_at', 'TEXT'],
+    // Nhật ký đổi trạng thái dạng JSON (mảng các lần đổi). Giữ trong bảng orders để orders.db chỉ có đúng 2 bảng: orders và order_items.
+    ['orders', 'status_log', 'TEXT CHECK (status_log IS NULL OR json_valid(status_log))']
   ];
 
   /**
-   * Bảng lịch sử đổi trạng thái + các trigger bảo vệ quy tắc ngay trong SQLite,
+   * Các trigger bảo vệ quy tắc trạng thái ngay trong SQLite,
    * để dù ai ghi trực tiếp vào orders.db cũng không thể phá quy tắc (đi tiến, hủy phải có lý do...).
    * Chạy sau khi đã thêm cột (MIGRATION_COLUMNS).
    */
   var STATUS_SCHEMA_STATEMENTS = [
-    'CREATE TABLE IF NOT EXISTS order_status_history (' +
-    '  id          INTEGER PRIMARY KEY AUTOINCREMENT,' +
-    '  order_id    INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,' +
-    '  from_status TEXT,' +
-    '  to_status   TEXT NOT NULL CHECK (to_status IN (' + Status.IDS.map(sqlQuote).join(', ') + ')),' +
-    '  reason      TEXT,' +
-    '  note        TEXT,' +
-    '  changed_at  TEXT NOT NULL' +
-    ')',
-    'CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_history(order_id)',
     // đơn mới luôn bắt đầu ở trạng thái đầu tiên
     'CREATE TRIGGER IF NOT EXISTS trg_orders_initial_status BEFORE INSERT ON orders ' +
     "WHEN NEW.status != '" + Status.INITIAL + "' BEGIN SELECT RAISE(ABORT, 'invalid_initial_status'); END",
@@ -112,6 +104,14 @@
     order_items: ['id', 'order_id', 'product_id', 'product_name', 'category', 'original_price',
       'discount_percent', 'unit_price', 'quantity', 'line_total']
   };
+
+  function parseLog(text) {
+    if (typeof text !== 'string' || text === '') return [];
+    try {
+      var v = JSON.parse(text);
+      return Array.isArray(v) ? v.filter(function (x) { return x && typeof x === 'object'; }) : [];
+    } catch (e) { return []; }
+  }
 
   function sqlQuote(v) { return "'" + String(v).replace(/'/g, "''") + "'"; } // chỉ dùng cho hằng số nội bộ
 
@@ -294,6 +294,23 @@
       return rowsOf(db.exec('PRAGMA table_info(' + table + ')')).map(function (r) { return r.name; });
     }
 
+    /**
+     * Phiên bản trước lưu lịch sử trong bảng order_status_history (bảng thứ 3).
+     * Chuyển dữ liệu đó vào cột orders.status_log rồi xóa bảng, để orders.db chỉ còn 2 bảng.
+     */
+    function migrateLegacyHistory(db) {
+      var exists = rowsOf(db.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'order_status_history'")).length > 0;
+      if (!exists) return;
+      var byOrder = {};
+      rowsOf(db.exec('SELECT order_id, from_status, to_status, reason, note, changed_at FROM order_status_history ORDER BY id')).forEach(function (r) {
+        (byOrder[r.order_id] = byOrder[r.order_id] || []).push({ from_status: r.from_status, to_status: r.to_status, reason: r.reason, note: r.note, changed_at: r.changed_at });
+      });
+      Object.keys(byOrder).forEach(function (id) {
+        db.run('UPDATE orders SET status_log = ? WHERE id = ? AND status_log IS NULL', [JSON.stringify(byOrder[id]), Number(id)]);
+      });
+      db.run('DROP TABLE order_status_history');
+    }
+
     function ensureSchema(db) {
       SCHEMA_STATEMENTS.forEach(function (sql) { db.run(sql); });
       Object.keys(EXPECTED_COLUMNS).forEach(function (table) {
@@ -307,6 +324,7 @@
         if (tableColumns(db, m[0]).indexOf(m[1]) === -1) db.run('ALTER TABLE ' + m[0] + ' ADD COLUMN ' + m[1] + ' ' + m[2]);
       });
       STATUS_SCHEMA_STATEMENTS.forEach(function (sql) { db.run(sql); });
+      migrateLegacyHistory(db);
     }
 
     /** Mở DB từ storage (hoặc tạo mới nếu chưa có). Không bao giờ thay thế DB hỏng bằng DB rỗng. */
@@ -422,7 +440,7 @@
         var db = await openDb();
         var bytes, result;
         try {
-          var rows = rowsOf(db.exec('SELECT id, order_code, status FROM orders WHERE id = ?', [id]));
+          var rows = rowsOf(db.exec('SELECT id, order_code, status, status_log FROM orders WHERE id = ?', [id]));
           if (!rows.length) throw OrderError('order_not_found', 'Không tìm thấy đơn hàng');
           var current = Status.normalize(rows[0].status);
 
@@ -437,9 +455,10 @@
           var changedAt = clock().toISOString();
           db.run('BEGIN');
           try {
-            db.run('UPDATE orders SET status = ?, cancel_reason = ?, status_updated_at = ? WHERE id = ?', [input.to, v.reason, changedAt, id]);
-            db.run('INSERT INTO order_status_history (order_id, from_status, to_status, reason, note, changed_at) VALUES (?, ?, ?, ?, ?, ?)',
-              [id, current, input.to, v.reason, v.note, changedAt]);
+            var log = parseLog(rows[0].status_log);
+            log.push({ from_status: current, to_status: input.to, reason: v.reason, note: v.note, changed_at: changedAt });
+            // một câu UPDATE duy nhất: trạng thái và nhật ký luôn đổi cùng nhau
+            db.run('UPDATE orders SET status = ?, cancel_reason = ?, status_updated_at = ?, status_log = ? WHERE id = ?', [input.to, v.reason, changedAt, JSON.stringify(log), id]);
             db.run('COMMIT');
           } catch (e) {
             try { db.run('ROLLBACK'); } catch (_) { /* bỏ qua */ }
@@ -472,7 +491,10 @@
           var order = rows[0];
           order.status = Status.normalize(order.status);
           order.items = rowsOf(db.exec('SELECT * FROM order_items WHERE order_id = ? ORDER BY id', [id]));
-          order.history = rowsOf(db.exec('SELECT * FROM order_status_history WHERE order_id = ? ORDER BY id', [id]));
+          order.history = parseLog(order.status_log).map(function (h, i) {
+            return { id: i + 1, order_id: id, from_status: h.from_status, to_status: h.to_status, reason: h.reason, note: h.note, changed_at: h.changed_at };
+          });
+          delete order.status_log;
           return order;
         } finally {
           db.close();
@@ -495,6 +517,52 @@
       });
     }
 
+    /**
+     * Xem nhanh một tệp SQLite (không ghi gì): có phải orders.db không, có bao nhiêu đơn.
+     * @returns {Promise<{isOrdersDb:boolean, empty:boolean, orderCount:number}>} ném db_corrupt nếu không phải SQLite
+     */
+    async function inspectDb(bytes) {
+      var SQL = await getSql();
+      var db = null;
+      try {
+        db = new SQL.Database(bytes);
+        var tables = rowsOf(db.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")).map(function (r) { return r.name; });
+        if (tables.length === 0) return { isOrdersDb: false, empty: true, orderCount: 0 };
+        var ours = tables.indexOf('orders') !== -1 && tables.indexOf('order_items') !== -1;
+        var count = ours ? Number(db.exec('SELECT COUNT(*) FROM orders')[0].values[0][0]) : 0;
+        return { isOrdersDb: ours, empty: false, orderCount: count };
+      } catch (e) {
+        throw OrderError('db_corrupt', 'Tệp không phải là cơ sở dữ liệu SQLite hợp lệ', e);
+      } finally {
+        if (db) { try { db.close(); } catch (_) { /* bỏ qua */ } }
+      }
+    }
+
+    /**
+     * Thay toàn bộ dữ liệu hiện có bằng nội dung một tệp orders.db (nâng cấp cấu trúc nếu cần).
+     * Dùng khi người dùng chọn "dùng dữ liệu trong file". Tệp hỏng thì từ chối, dữ liệu cũ nguyên vẹn.
+     */
+    function importDb(bytes) {
+      return lock(async function () {
+        var SQL = await getSql();
+        var db = null, out, count;
+        try {
+          db = new SQL.Database(bytes);
+          db.run('PRAGMA foreign_keys = ON');
+          ensureSchema(db);
+          count = Number(db.exec('SELECT COUNT(*) FROM orders')[0].values[0][0]);
+          out = db.export();
+        } catch (e) {
+          if (e && e.code === 'schema_mismatch') throw e;
+          throw OrderError('db_corrupt', 'Tệp orders.db không hợp lệ', e);
+        } finally {
+          if (db) { try { db.close(); } catch (_) { /* bỏ qua */ } }
+        }
+        try { await storage.save(out); } catch (e) { throw OrderError('storage_save_failed', 'Không lưu được tệp orders.db', e); }
+        return { orderCount: count };
+      });
+    }
+
     /** Nội dung tệp orders.db hiện tại (nếu chưa có đơn nào thì là DB rỗng có sẵn 2 bảng) */
     function exportDb() {
       return lock(async function () {
@@ -503,7 +571,7 @@
       });
     }
 
-    return { placeOrder: placeOrder, listOrders: listOrders, exportDb: exportDb, updateOrderStatus: updateOrderStatus, getOrder: getOrder };
+    return { placeOrder: placeOrder, listOrders: listOrders, exportDb: exportDb, updateOrderStatus: updateOrderStatus, getOrder: getOrder, inspectDb: inspectDb, importDb: importDb };
   }
 
   return {

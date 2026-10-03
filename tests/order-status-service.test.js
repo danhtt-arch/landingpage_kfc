@@ -88,7 +88,7 @@
       await env.svc.updateOrderStatus({ orderId: o.id, to: 'sending' });
       var db = await openBytes(env.st.bytes);
       eq(q(db, 'SELECT status, cancel_reason FROM orders')[0], { status: 'sending', cancel_reason: null });
-      eq(q(db, 'SELECT COUNT(*) AS n FROM order_status_history')[0].n, 1);
+      eq(JSON.parse(q(db, 'SELECT status_log FROM orders')[0].status_log).map(function (h) { return h.from_status + '>' + h.to_status; }), ['not_sent>sending'], 'nhật ký nằm trong cột status_log');
       db.close();
     });
     test('hủy khi chưa gửi với lý do "hư hỏng" + ghi chú', async function () {
@@ -215,16 +215,16 @@
       await rejects(env.svc.updateOrderStatus({ orderId: 1, to: 'sending' }), 'db_corrupt');
       eq(env.st.saves, 0);
     });
-    test('ghi giữa chừng lỗi (trigger chặn lịch sử): ROLLBACK, trạng thái đơn không đổi', async function () {
+    test('ghi lỗi (trigger chặn cập nhật nhật ký): không có gì thay đổi, trạng thái và nhật ký luôn đi cùng nhau', async function () {
       var env = setup(); var o = await newOrder(env);
       var db = await openBytes(env.st.bytes);
-      db.run("CREATE TRIGGER block_hist BEFORE INSERT ON order_status_history BEGIN SELECT RAISE(ABORT, 'blocked'); END");
+      db.run("CREATE TRIGGER block_log BEFORE UPDATE OF status_log ON orders BEGIN SELECT RAISE(ABORT, 'blocked'); END");
       env.st.bytes = db.export(); db.close();
       var before = bytesOf(env.st);
       await rejects(env.svc.updateOrderStatus({ orderId: o.id, to: 'sending' }), 'db_write_failed');
       eq(bytesOf(env.st), before);
       db = await openBytes(env.st.bytes);
-      eq(q(db, 'SELECT status FROM orders')[0].status, 'not_sent', 'UPDATE phải được hoàn tác'); db.close();
+      eq(q(db, 'SELECT status, status_log FROM orders')[0], { status: 'not_sent', status_log: null }, 'không được đổi một nửa'); db.close();
     });
   });
 
@@ -259,11 +259,12 @@
       assert(/cancel_reason_required/.test(throwsSql(db, "UPDATE orders SET status = 'cancelled'")));
       eq(throwsSql(db, "UPDATE orders SET status = 'cancelled', cancel_reason = 'damaged'"), null); db.close();
     });
-    test('giá trị status/cancel_reason/to_status ngoài danh sách bị CHECK từ chối', async function () {
+    test('giá trị status/cancel_reason ngoài danh sách và status_log không phải JSON bị CHECK từ chối', async function () {
       var db = await dbWith([]);
       assert(throwsSql(db, "UPDATE orders SET status = 'shipped'") !== null, 'status lạ');
       assert(throwsSql(db, "UPDATE orders SET cancel_reason = 'other'") !== null, 'lý do lạ');
-      assert(throwsSql(db, "INSERT INTO order_status_history (order_id, from_status, to_status, changed_at) VALUES (1, 'not_sent', 'shipped', 't')") !== null, 'to_status lạ');
+      assert(throwsSql(db, "UPDATE orders SET status_log = 'không phải json {'") !== null, 'status_log phải là JSON hợp lệ');
+      eq(throwsSql(db, "UPDATE orders SET status_log = '[]'"), null, 'JSON hợp lệ thì được');
       assert(throwsSql(db, "UPDATE orders SET status = NULL") !== null, 'status không được NULL');
       db.close();
     });
@@ -273,12 +274,11 @@
       eq(throwsSql(db, "INSERT INTO orders (order_code, created_at, total_qty, subtotal, discount_total, total) VALUES ('X2','t',1,1,0,1)"), null, 'không chỉ định thì mặc định hợp lệ');
       eq(q(db, "SELECT status FROM orders WHERE order_code = 'X2'")[0].status, 'not_sent'); db.close();
     });
-    test('xóa đơn thì lịch sử bị xóa theo (cascade); lịch sử không mồ côi', async function () {
+    test('xóa đơn thì nhật ký trạng thái đi theo (nằm cùng dòng), không còn bảng nào khác ngoài orders và order_items', async function () {
       var db = await dbWith(['sending']); db.run('PRAGMA foreign_keys = ON');
-      eq(q(db, 'SELECT COUNT(*) AS n FROM order_status_history')[0].n, 1);
+      eq(q(db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map(function (r) { return r.name; }), ['order_items', 'orders']);
       db.run('DELETE FROM orders');
-      eq(q(db, 'SELECT COUNT(*) AS n FROM order_status_history')[0].n, 0);
-      assert(throwsSql(db, "INSERT INTO order_status_history (order_id, to_status, changed_at) VALUES (999, 'sending', 't')") !== null, 'khóa ngoại'); db.close();
+      eq(q(db, 'SELECT COUNT(*) AS n FROM orders')[0].n, 0); eq(q(db, 'SELECT COUNT(*) AS n FROM order_items')[0].n, 0); db.close();
     });
     test('trigger sinh từ bảng quy tắc: mọi cặp (từ, tới) trong DB khớp đúng ma trận của order-status.js', async function () {
       for (var from of S.IDS) {
@@ -378,9 +378,9 @@
       for (var i = 0; i < 3; i++) await newOrder(env);
       var db = await openBytes(env.st.bytes);
       var cols = q(db, 'PRAGMA table_info(orders)').map(function (c) { return c.name; });
-      eq(cols.length, 16); eq(new Set(cols).size, 16);
+      eq(cols.length, 17); eq(new Set(cols).size, 17);
       eq(q(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger'")[0].n, 3);
-      eq(q(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='order_status_history'")[0].n, 1);
+      eq(q(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")[0].n, 2, 'chỉ 2 bảng');
       db.close();
     });
     test('chỉ đọc trên DB cũ: dùng được nhưng không ghi vào tệp', async function () {
@@ -389,7 +389,7 @@
       eq((await svc.listOrders()).length, 2); await svc.getOrder(1); await svc.exportDb();
       eq(bytesOf(st), before); eq(st.saves, 0);
     });
-    test('toàn vẹn sau nhiều thao tác: orders.status luôn khớp dòng lịch sử cuối cùng', async function () {
+    test('toàn vẹn sau nhiều thao tác: orders.status luôn khớp bản ghi cuối của status_log', async function () {
       var env = setup({ storage: memStorage(await legacyDb(true)) });
       var paths = [[], ['sending'], ['sending', 'delivered'], ['cancelled'], ['sending', 'cancelled']];
       for (var i = 0; i < paths.length; i++) {
@@ -397,11 +397,44 @@
         for (var p of paths[i]) await env.svc.updateOrderStatus({ orderId: o.id, to: p, reason: p === 'cancelled' ? (i % 2 ? 'accident' : 'damaged') : undefined });
       }
       var db = await openBytes(env.st.bytes);
-      var bad = q(db, "SELECT o.id FROM orders o WHERE o.status != COALESCE((SELECT to_status FROM order_status_history h WHERE h.order_id = o.id ORDER BY h.id DESC LIMIT 1), 'not_sent')");
-      eq(bad, [], 'đơn có status lệch lịch sử');
+      var bad = q(db, "SELECT id FROM orders WHERE status != COALESCE(json_extract(status_log, '$[#-1].to_status'), 'not_sent')");
+      eq(bad, [], 'đơn có status lệch nhật ký');
       eq(q(db, "SELECT COUNT(*) AS n FROM orders WHERE (status = 'cancelled') != (cancel_reason IS NOT NULL)")[0].n, 0, 'cancel_reason phải có khi và chỉ khi đã hủy');
-      eq(q(db, 'SELECT h.id FROM order_status_history h WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.id = h.order_id)'), []);
+      eq(q(db, "SELECT id FROM orders WHERE status_log IS NOT NULL AND NOT json_valid(status_log)"), [], 'status_log phải là JSON hợp lệ');
       db.close();
+    });
+    test('orders.db của bản trước (có bảng thứ 3 order_status_history): chuyển lịch sử vào status_log rồi xóa bảng, còn đúng 2 bảng', async function () {
+      var SQL = await sqlPromise; var d = new SQL.Database();
+      OS.SCHEMA_STATEMENTS.forEach(function (s) { d.run(s); });
+      ['customer_name', 'customer_phone', 'customer_address', 'customer_note', 'payment_method', 'payment_status', 'cancel_reason', 'status_updated_at'].forEach(function (c) { d.run('ALTER TABLE orders ADD COLUMN ' + c + ' TEXT'); });
+      d.run("ALTER TABLE orders ADD COLUMN status TEXT NOT NULL DEFAULT 'not_sent'");
+      d.run('CREATE TABLE order_status_history (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, from_status TEXT, to_status TEXT NOT NULL, reason TEXT, note TEXT, changed_at TEXT NOT NULL)');
+      d.run("INSERT INTO orders (order_code, created_at, total_qty, subtotal, discount_total, total, status, cancel_reason) VALUES ('KFC-20261001-0001','2026-10-01T01:00:00.000Z',1,45000,0,45000,'cancelled','accident')");
+      d.run("INSERT INTO orders (order_code, created_at, total_qty, subtotal, discount_total, total, status) VALUES ('KFC-20261001-0002','2026-10-01T02:00:00.000Z',1,19000,0,19000,'sending')");
+      d.run("INSERT INTO orders (order_code, created_at, total_qty, subtotal, discount_total, total) VALUES ('KFC-20261001-0003','2026-10-01T03:00:00.000Z',1,19000,0,19000)");
+      d.run("INSERT INTO order_status_history (order_id, from_status, to_status, reason, note, changed_at) VALUES (1,'not_sent','sending',NULL,'','2026-10-01T01:10:00.000Z')");
+      d.run("INSERT INTO order_status_history (order_id, from_status, to_status, reason, note, changed_at) VALUES (1,'sending','cancelled','accident','Xe va chạm','2026-10-01T01:30:00.000Z')");
+      d.run("INSERT INTO order_status_history (order_id, from_status, to_status, reason, note, changed_at) VALUES (2,'not_sent','sending',NULL,'','2026-10-01T02:10:00.000Z')");
+      var legacy = d.export(); d.close();
+
+      var env = setup({ storage: memStorage(legacy) });
+      var o1 = await env.svc.getOrder(1), o2 = await env.svc.getOrder(2), o3 = await env.svc.getOrder(3);
+      eq(o1.history.map(function (h) { return [h.from_status, h.to_status, h.reason, h.note, h.changed_at]; }),
+        [['not_sent', 'sending', null, '', '2026-10-01T01:10:00.000Z'], ['sending', 'cancelled', 'accident', 'Xe va chạm', '2026-10-01T01:30:00.000Z']], 'lịch sử đơn 1 giữ nguyên');
+      eq(o2.history.length, 1); eq(o3.history, [], 'đơn chưa từng đổi thì không có nhật ký');
+      // ghi tiếp để chuyển đổi được lưu vào tệp
+      await env.svc.updateOrderStatus({ orderId: 2, to: 'delivered' });
+      var db = await openBytes(env.st.bytes);
+      eq(q(db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map(function (r) { return r.name; }), ['order_items', 'orders'], 'chỉ còn 2 bảng');
+      eq(JSON.parse(q(db, 'SELECT status_log FROM orders WHERE id = 2')[0].status_log).map(function (h) { return h.to_status; }), ['sending', 'delivered']);
+      eq(q(db, 'SELECT status FROM orders ORDER BY id').map(function (r) { return r.status; }), ['cancelled', 'delivered', 'not_sent']);
+      db.close();
+    });
+    test('chạy migration lần hai trên DB đã chuyển đổi: không đổi gì', async function () {
+      var env = setup(); var o = await newOrder(env); await env.svc.updateOrderStatus({ orderId: o.id, to: 'sending' });
+      var before = await env.svc.getOrder(o.id);
+      await env.svc.listOrders(); await env.svc.getOrder(o.id);
+      eq(await env.svc.getOrder(o.id), before);
     });
   });
 })();

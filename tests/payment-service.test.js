@@ -319,7 +319,7 @@
       await env.svc.submit(submitInput(env));
       var db = await openBytes(env.storage.bytes);
       var cols = q(db, 'PRAGMA table_info(orders)').map(function (c) { return c.name; });
-      eq(cols.length, 16); eq(new Set(cols).size, 16);
+      eq(cols.length, 17); eq(new Set(cols).size, 17);
       eq(q(db, 'SELECT COUNT(*) AS n FROM orders')[0].n, 3); db.close();
     });
     test('chỉ đọc (listOrders) trên DB cũ vẫn chạy, không ghi vào tệp', async function () {

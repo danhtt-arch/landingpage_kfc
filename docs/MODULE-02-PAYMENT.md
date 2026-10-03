@@ -59,7 +59,7 @@ Nếu bỏ module Thanh Toán (gỡ 4 script `js/payment/*`), Giỏ hàng vẫn 
 
 ## 5. Dữ liệu lưu vào orders.db
 
-Bảng `orders` có thêm 6 cột (nullable, thêm tự động bằng `ALTER TABLE` nếu còn thiếu):
+Bảng `orders` có thêm 6 cột (nullable, thêm tự động bằng `ALTER TABLE` nếu còn thiếu; không thêm bảng, `orders.db` vẫn chỉ có 2 bảng):
 
 | Cột | Nội dung |
 |---|---|
@@ -121,13 +121,13 @@ tests/payment-validate.test.js, tests/payment-service.test.js, tests/ui.html (ph
 ## 10. Chạy test
 
 ```bash
-node tests/run.js        # 391 test, gồm test thanh toán chạy trên SQLite thật
+node tests/run.js        # 430 test, gồm test thanh toán chạy trên SQLite thật
 ```
 
 Trong trình duyệt (qua Live Server hoặc `python -m http.server`):
 
 - `tests/index.html`: 231 test logic (gồm kiểm tra dữ liệu thanh toán).
-- `tests/ui.html`: 97 test giao diện (gồm 28 test của module Thanh Toán).
+- `tests/ui.html`: 107 test giao diện (gồm 28 test của module Thanh Toán).
 
 **Kiểm tra dữ liệu** (`payment-validate.test.js`): số điện thoại (10 định dạng chuẩn hóa, hợp lệ, sai), họ tên (tiếng Việt có dấu, NFD→NFC, số/ký hiệu/emoji/thẻ HTML, biên 60/61), địa chỉ (biên 10/200, chỉ số/ký hiệu, xuống dòng), ghi chú (biên 200, CRLF, ký tự ẩn), toàn form (thiếu hết, sai một trường, không đổi dữ liệu vào), phương thức (`__proto__`, `constructor`…).
 

@@ -1,0 +1,61 @@
+/* ==========================================
+   KFC "Lưu orders.db ra file" - khung giao diện dùng chung
+   Dùng token của css/style.css (DESIGN.md). Chỉ dùng font-weight 400/700.
+   ========================================== */
+
+.fs-panel {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border-radius: var(--radius-md);
+  background-color: var(--color-gray);
+  border-left: 4px solid #bdbdbd;
+  text-align: left;
+}
+
+.fs-panel--ok { border-left-color: #1a7f37; background-color: #e8f5ec; }
+.fs-panel--warn { border-left-color: #ffb400; background-color: #fff6e0; }
+
+.fs-panel__title { margin-bottom: 6px; font-size: 1rem; font-weight: 700; color: var(--color-dark); }
+.fs-panel--ok .fs-panel__title { color: #1a7f37; }
+.fs-panel--warn .fs-panel__title { color: #7a5200; }
+
+.fs-panel__text { font-size: 0.9rem; line-height: 1.55; color: var(--color-text); overflow-wrap: anywhere; }
+
+.fs-panel__actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.fs-panel__actions:empty { display: none; }
+
+.fs-btn {
+  padding: 10px 18px;
+  border-radius: var(--radius-full);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  border: 2px solid transparent;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.fs-btn:disabled { opacity: 0.6; cursor: wait; }
+
+.fs-btn--primary { background-color: var(--color-primary); color: var(--color-white); }
+.fs-btn--primary:hover:not(:disabled) { background-color: var(--color-primary-hover); }
+
+.fs-btn--ghost { background-color: var(--color-white); color: var(--color-dark); border-color: #d0d0d0; }
+.fs-btn--ghost:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
+
+.fs-btn--danger { background-color: var(--color-white); color: var(--color-primary); border-color: var(--color-primary); }
+.fs-btn--danger:hover:not(:disabled) { background-color: var(--color-primary); color: var(--color-white); }
+
+.fs-choices { display: grid; gap: 12px; margin-top: 12px; }
+.fs-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.fs-choice__hint { font-size: 0.85rem; color: var(--color-text-muted); }
+
+.fs-panel__notice { margin-top: 12px; font-size: 0.9rem; font-weight: 700; color: var(--color-primary-hover); overflow-wrap: anywhere; }
+.fs-panel__notice[hidden] { display: none; }
+.fs-panel--ok .fs-panel__notice { color: #1a7f37; }
+
+.fs-panel--compact { margin-top: 0; margin-bottom: 20px; padding: 14px 16px; }
+
+@media (max-width: 767px) {
+  .fs-panel { padding: 16px; }
+  .fs-panel__actions .fs-btn { flex: 1 1 100%; }
+}

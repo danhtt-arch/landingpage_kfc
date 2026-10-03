@@ -165,7 +165,8 @@
     el.body.textContent = '';
     ui = {};
 
-    el.body.appendChild(make('p', 'os-intro', 'Các đơn hàng được lưu trong cơ sở dữ liệu SQLite (orders.db) trên trình duyệt này. Đây là website demo, không có đăng nhập nên mọi người dùng chung máy đều xem và cập nhật được.'));
+    el.body.appendChild(make('p', 'os-intro', 'Các đơn hàng được lưu tự động trong trình duyệt này. Đây là website demo, không có đăng nhập nên mọi người dùng chung máy đều xem và cập nhật được.'));
+    if (window.KFCFileSyncUI) el.body.appendChild(window.KFCFileSyncUI.create({ compact: true }));
 
     if (orders.length === 0) {
       var empty = make('div', 'os-state');

@@ -42,7 +42,9 @@
      * opts: width, csv (chuỗi), csvMode ('404' | 'network'), blockStorage
      */
     function resetIdb() {
-      return new Promise(function (res) { var r = indexedDB.deleteDatabase('kfc-orders'); r.onsuccess = r.onerror = r.onblocked = function () { res(); }; });
+      return Promise.all(['kfc-orders', 'kfc-orders-file'].map(function (n) {
+        return new Promise(function (res) { var r = indexedDB.deleteDatabase(n); r.onsuccess = r.onerror = r.onblocked = function () { res(); }; });
+      }));
     }
     async function waitFor(fn, ms) {
       for (var i = 0; i < (ms || 6000) / 50; i++) { if (fn()) return true; await wait(50); }
@@ -511,12 +513,12 @@
         eq(a.w.KFCOrders.storage.persistent, false);
         var note = a.d.querySelector('.order-success__note');
         assert(note.classList.contains('order-success__note--warn'), 'phải là cảnh báo');
-        assert(note.textContent.indexOf('Lưu file orders.db') > -1, 'phải hướng dẫn lưu file');
+        assert(note.textContent.indexOf('file orders.db') > -1, 'phải hướng dẫn lưu ra file');
         eq((await a.w.KFCOrders.listOrders()).length, 1, 'đơn vẫn có trong phiên');
       } finally { a.w.console.warn = origWarn; a.done(); }
     });
 
-    test('Nút "Lưu file orders.db" (không có hộp thoại lưu): tải về tệp tên orders.db đúng định dạng SQLite', async function () {
+    test('Trình duyệt không hỗ trợ ghi file: khung giải thích + nút tải bản sao, tải về tệp orders.db đúng định dạng SQLite', async function () {
       localStorage.clear();
       var a = await load({ csv: FIXTURE });
       try {
@@ -533,12 +535,14 @@
         var bytes = new Uint8Array(await blob.arrayBuffer());
         eq(String.fromCharCode.apply(null, Array.prototype.slice.call(bytes, 0, 15)), 'SQLite format 3');
         assert(bytes.length > 4096, 'tệp quá nhỏ: ' + bytes.length);
-        assert(await waitFor(function () { return lastToast(a).indexOf('Đã tải orders.db') > -1; }), 'toast: ' + lastToast(a));
+        assert(await waitFor(function () { return a.d.querySelector('.fs-panel__notice').textContent.indexOf('Đã tải bản sao orders.db') > -1; }), 'thông báo: ' + a.d.querySelector('.fs-panel__notice').textContent);
         assert(!a.d.querySelector('.order-success__save').disabled, 'nút phải được mở lại');
+        assert(a.d.querySelector('.fs-panel__text').textContent.indexOf('Chrome hoặc Edge') > -1, 'giải thích vì sao không tự ghi file');
+        eq([].map.call(a.d.querySelectorAll('.fs-panel button'), function (b) { return b.textContent; }), ['Tải về bản sao orders.db']);
       } finally { a.done(); }
     });
 
-    test('Nút "Lưu file orders.db" (có hộp thoại lưu): ghi đúng nội dung; hủy hộp thoại thì im lặng', async function () {
+    test('Nút "Chỉ tải về một bản sao" (có hộp thoại lưu): ghi đúng nội dung; hủy hộp thoại thì im lặng, không liên kết', async function () {
       localStorage.clear();
       var a = await load({ csv: FIXTURE });
       try {
@@ -556,11 +560,12 @@
         eq(suggested, 'orders.db');
         var bytes = new Uint8Array(await written[0].arrayBuffer());
         eq(String.fromCharCode.apply(null, Array.prototype.slice.call(bytes, 0, 15)), 'SQLite format 3');
-        assert(await waitFor(function () { return lastToast(a).indexOf('Đã lưu file orders.db') > -1; }), 'toast: ' + lastToast(a));
+        assert(await waitFor(function () { return a.d.querySelector('.fs-panel__notice').textContent.indexOf('Đã lưu bản sao orders.db') > -1; }), 'thông báo: ' + a.d.querySelector('.fs-panel__notice').textContent);
+        eq(a.w.KFCOrders.fileSync.getState().linked, false, 'chỉ lưu một bản sao, chưa liên kết');
         // hủy hộp thoại
-        mode = 'abort'; a.d.querySelectorAll('.toast').forEach(function (t) { t.remove(); });
+        mode = 'abort';
         a.d.querySelector('.order-success__save').click(); await wait(300);
-        eq(a.d.querySelectorAll('.toast').length, 0, 'hủy hộp thoại không được báo lỗi');
+        eq(a.d.querySelector('.fs-panel__notice').hidden, true, 'hủy hộp thoại không được báo lỗi');
         assert(!a.d.querySelector('.order-success__save').disabled);
       } finally { a.done(); }
     });
@@ -943,7 +948,7 @@
       } finally { a.done(); }
     });
 
-    test('Nút "Lưu file orders.db" ở màn hình thành công: ghi đúng tệp SQLite; hủy hộp thoại thì im lặng', async function () {
+    test('Màn hình thanh toán thành công: nút "Chỉ tải về một bản sao" ghi đúng tệp SQLite; hủy hộp thoại thì im lặng', async function () {
       localStorage.clear();
       var a = await load(PAYLOAD);
       try {
@@ -960,10 +965,10 @@
         eq(suggested, 'orders.db');
         var bytes = new Uint8Array(await written[0].arrayBuffer());
         eq(bytesHead(bytes), 'SQLite format 3');
-        assert(await waitFor(function () { return a.d.querySelector('.co-status').textContent.indexOf('Đã lưu') > -1; }));
-        mode = 'abort'; a.d.querySelector('.co-status').textContent = '';
+        assert(await waitFor(function () { return a.d.querySelector('.fs-panel__notice').textContent.indexOf('Đã lưu bản sao') > -1; }));
+        mode = 'abort';
         a.d.querySelector('.co-save').click(); await wait(300);
-        eq(a.d.querySelector('.co-status').textContent, '', 'hủy không được báo lỗi');
+        eq(a.d.querySelector('.fs-panel__notice').hidden, true, 'hủy không được báo lỗi');
         assert(!a.d.querySelector('.co-save').disabled);
       } finally { a.done(); }
     });
@@ -976,7 +981,7 @@
         await openCheckout(a, [0]);
         assert(await placeVia(a, 'cod'));
         var note = a.d.querySelector('.co-saved');
-        assert(note.classList.contains('co-saved--warn') && note.textContent.indexOf('Lưu file orders.db') > -1, note.textContent);
+        assert(note.classList.contains('co-saved--warn') && note.textContent.indexOf('file orders.db') > -1, note.textContent);
       } finally { a.w.console.warn = origWarn; a.done(); }
     });
 
@@ -1576,6 +1581,259 @@
         key(a, 'Tab', { shiftKey: true }); await wait(10);
         assert(a.d.activeElement === a.d.querySelector('.os-card'), 'Shift+Tab ở đầu nhảy xuống cuối');
       } finally { a.done(); }
+    });
+
+    // ======================================================================
+    // GHI orders.db RA FILE THẬT (File System Access API) - dùng "file giả" có đủ API
+    // ======================================================================
+    function fakeHandle(initial, opts) {
+      opts = opts || {};
+      var f = { name: opts.name || 'orders.db', bytes: initial || new Uint8Array(0), perm: 'granted', requestResult: 'granted', requestThrows: false, writes: 0, failWrite: false, requestCalls: 0 };
+      f.getFile = async function () { var b = f.bytes; return { size: b.length, arrayBuffer: async function () { return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); } }; };
+      f.queryPermission = async function () { return f.perm; };
+      f.requestPermission = async function () { f.requestCalls++; if (f.requestThrows) { var e = new Error('cần thao tác người dùng'); e.name = 'SecurityError'; throw e; } f.perm = f.requestResult; return f.perm; };
+      f.createWritable = async function () {
+        var buf = null;
+        return { write: async function (b) { if (f.failWrite) throw new Error('ghi lỗi'); buf = new Uint8Array(b); }, close: async function () { f.bytes = buf; f.writes++; }, abort: async function () {} };
+      };
+      return f;
+    }
+    function fsPanel(a) { return a.d.querySelector('.fs-panel'); }
+    function fsTitle(a) { return fsPanel(a).querySelector('.fs-panel__title').textContent; }
+    function fsBtns(a) { return [].map.call(fsPanel(a).querySelectorAll('button'), function (b) { return b.textContent; }); }
+    function fsBtn(a, startsWith) { return [].filter.call(fsPanel(a).querySelectorAll('button'), function (b) { return b.textContent.indexOf(startsWith) === 0; })[0]; }
+    function fsNotice(a) { var n = fsPanel(a).querySelector('.fs-panel__notice'); return n && !n.hidden ? n.textContent : ''; }
+    async function queryFile(a, bytes, sql) {
+      var SQL = await a.w.initSqlJs({ locateFile: function (f) { return new URL('../js/vendor/' + f, location.href).href; } });
+      var db = new SQL.Database(bytes); var r = db.exec(sql); db.close();
+      return r.length ? r[0].values : [];
+    }
+    function tablesOfFile(a, bytes) { return queryFile(a, bytes, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").then(function (v) { return v.map(function (x) { return x[0]; }); }); }
+    async function cartSuccess(a, idx) { await orderWith(a, idx || [0]); a.$('cart-checkout').click(); return waitFor(function () { return successShown(a); }); }
+    /** orders.db của "lần dùng trước" có n đơn, được ghi vào một file giả */
+    async function fileWithOrders(n) {
+      var f = fakeHandle(); var a1 = await load(SO);
+      try {
+        a1.w.showSaveFilePicker = async function () { return f; };
+        for (var i = 0; i < n; i++) await addOrder(a1, 'Khách cũ ' + (i + 1), []);
+        var r = await a1.w.KFCOrders.fileSync.link(); eq(r.status, 'written');
+      } finally { a1.done(); }
+      return f;
+    }
+
+    test('Ghi ra file orders.db thật: chọn file một lần, sau đó mỗi đơn mới và mỗi lần đổi trạng thái tự ghi vào file; file có ĐÚNG 2 bảng', async function () {
+      localStorage.clear();
+      var a = await load(SO); var f = fakeHandle(); var suggested = [];
+      try {
+        a.w.showSaveFilePicker = async function (o) { suggested.push(o.suggestedName); return f; };
+        assert(await cartSuccess(a), 'thanh toán xong');
+        eq(fsTitle(a), 'Lưu thành file orders.db (tự động)');
+        assert(fsPanel(a).textContent.indexOf('2 bảng orders và order_items') > -1, 'giải thích rõ: file gồm 2 bảng');
+        assert(fsPanel(a).textContent.indexOf('chọn nơi lưu file một lần') > -1, 'giải thích vì sao phải chọn một lần');
+        eq(fsBtns(a), ['Chọn nơi lưu file orders.db', 'Chỉ tải về một bản sao']); eq(f.writes, 0, 'chưa chọn thì chưa ghi');
+        fsBtn(a, 'Chọn nơi lưu').click();
+        assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }), 'phải chuyển sang trạng thái đang tự lưu');
+        eq(suggested, ['orders.db']); eq(f.writes, 1);
+        eq(fsTitle(a), '✓ Đang tự động lưu vào file');
+        assert(fsPanel(a).textContent.indexOf('"orders.db"') > -1 && fsPanel(a).textContent.indexOf('bạn không cần bấm gì thêm') > -1);
+        eq(bytesHead(f.bytes), 'SQLite format 3'); eq(await tablesOfFile(a, f.bytes), ['order_items', 'orders']);
+        eq((await a.w.KFCOrders.inspectDb(f.bytes)).orderCount, 1, 'đơn đặt trước khi liên kết cũng có trong file');
+        // đơn mới: tự ghi, không bấm gì
+        var o2 = await addOrder(a, 'Trần Thị Bích', [], [[SP3, 1]]);
+        eq([o2.file.status, f.writes], ['written', 2]);
+        eq((await queryFile(a, f.bytes, 'SELECT order_code FROM orders ORDER BY id')).length, 2);
+        // đổi trạng thái: tự ghi
+        var r = await a.w.KFCOrders.updateOrderStatus({ orderId: o2.id, to: 'sending' });
+        eq([r.file.status, f.writes], ['written', 3]);
+        eq((await queryFile(a, f.bytes, 'SELECT status FROM orders ORDER BY id')).map(function (x) { return x[0]; }), ['not_sent', 'sending']);
+        eq((await queryFile(a, f.bytes, 'SELECT COUNT(*) FROM order_items'))[0][0], 2, 'mỗi đơn 1 dòng hàng');
+        eq((await queryFile(a, f.bytes, 'PRAGMA integrity_check'))[0][0], 'ok');
+        var mine = await a.w.KFCOrders.exportDb(); assert(f.bytes.length === mine.length && f.bytes.every(function (v, i) { return v === mine[i]; }), 'file phải giống từng byte với dữ liệu trong trình duyệt');
+      } finally { a.done(); }
+    });
+
+    test('File đã có đơn hàng: hỏi cách xử lý, chưa chọn thì không đụng tới file; "Dùng dữ liệu trong file" nạp đơn của file', async function () {
+      localStorage.clear();
+      var f = await fileWithOrders(2); var original = new Uint8Array(f.bytes); var w0 = f.writes;
+      var a = await load(SO);
+      try {
+        a.w.showSaveFilePicker = async function () { return f; };
+        await addOrder(a, 'Đơn của trình duyệt', []);
+        assert(await cartSuccess(a, [2]), 'success');
+        fsBtn(a, 'Chọn nơi lưu').click();
+        assert(await waitFor(function () { return fsTitle(a) === 'File này đã có dữ liệu'; }), 'phải hỏi: ' + fsTitle(a));
+        assert(fsPanel(a).textContent.indexOf('đã có 2 đơn hàng') > -1, 'nêu số đơn trong file');
+        assert(fsPanel(a).textContent.indexOf('Các đơn đang có trong file sẽ bị xóa khỏi file') > -1, 'cảnh báo rõ hậu quả của việc ghi đè');
+        eq(fsBtns(a), ['Dùng dữ liệu trong file', 'Ghi đè file bằng dữ liệu của trình duyệt', 'Hủy, không liên kết']);
+        eq([f.writes, a.w.KFCOrders.fileSync.getState().linked], [w0, false]);
+        assert(f.bytes.every(function (v, i) { return v === original[i]; }), 'file bị đổi khi chưa chọn');
+        fsBtn(a, 'Dùng dữ liệu trong file').click();
+        assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }), 'liên kết xong');
+        assert(fsNotice(a).indexOf('Đã dùng 2 đơn hàng trong file') > -1, 'thông báo: ' + fsNotice(a));
+        var list = await a.w.KFCOrders.listOrders();
+        eq(list.map(function (o) { return o.customer_name; }), ['Khách cũ 2', 'Khách cũ 1'], 'trình duyệt giờ có đơn của file');
+        eq(await tablesOfFile(a, f.bytes), ['order_items', 'orders']); eq((await a.w.KFCOrders.inspectDb(f.bytes)).orderCount, 2);
+      } finally { a.done(); }
+    });
+
+    test('File đã có đơn hàng: "Ghi đè file" thay file bằng dữ liệu trình duyệt; "Hủy" giữ nguyên cả hai', async function () {
+      localStorage.clear();
+      var f = await fileWithOrders(3); var w0 = f.writes;
+      var a = await load(SO);
+      try {
+        a.w.showSaveFilePicker = async function () { return f; };
+        var mine = await addOrder(a, 'Đơn của trình duyệt', []);
+        assert(await cartSuccess(a, [2]));
+        // hủy
+        var snapshot = new Uint8Array(f.bytes);
+        fsBtn(a, 'Chọn nơi lưu').click(); assert(await waitFor(function () { return fsTitle(a) === 'File này đã có dữ liệu'; }));
+        fsBtn(a, 'Hủy').click();
+        assert(await waitFor(function () { return fsTitle(a) === 'Lưu thành file orders.db (tự động)'; }), 'quay về trạng thái chưa liên kết');
+        eq([f.writes, a.w.KFCOrders.fileSync.getState().linked], [w0, false]);
+        assert(f.bytes.every(function (v, i) { return v === snapshot[i]; }), 'hủy thì file nguyên vẹn'); eq((await a.w.KFCOrders.listOrders()).length, 2, 'dữ liệu trình duyệt nguyên vẹn (đơn đặt trước + đơn vừa đặt ở màn hình thành công)');
+        // ghi đè
+        fsBtn(a, 'Chọn nơi lưu').click(); assert(await waitFor(function () { return fsTitle(a) === 'File này đã có dữ liệu'; }));
+        fsBtn(a, 'Ghi đè file').click();
+        assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }));
+        var codes = (await queryFile(a, f.bytes, 'SELECT order_code FROM orders ORDER BY id')).map(function (x) { return x[0]; });
+        eq(codes.length, 2, 'file giờ chỉ có 2 đơn của trình duyệt, không còn 3 đơn cũ của file'); assert(codes.indexOf(mine.code) !== -1, 'có đơn của trình duyệt');
+        assert((await queryFile(a, f.bytes, "SELECT COUNT(*) FROM orders WHERE customer_name LIKE 'Khách cũ%'"))[0][0] === 0, 'đơn cũ của file đã bị ghi đè');
+      } finally { a.done(); }
+    });
+
+    test('Chọn file không phải orders.db (văn bản, SQLite khác): từ chối, báo lý do, KHÔNG ghi đè file đó', async function () {
+      localStorage.clear();
+      var a = await load(SO);
+      try {
+        var text = fakeHandle(new Uint8Array(Array.from('Tài liệu quan trọng, không phải cơ sở dữ liệu.').map(function (c) { return c.charCodeAt(0) & 255; })), { name: 'baocao.docx' });
+        var textBefore = new Uint8Array(text.bytes);
+        a.w.showSaveFilePicker = async function () { return text; };
+        assert(await cartSuccess(a));
+        fsBtn(a, 'Chọn nơi lưu').click();
+        assert(await waitFor(function () { return fsNotice(a).indexOf('không phải cơ sở dữ liệu SQLite') > -1; }), 'thông báo: ' + fsNotice(a));
+        assert(fsNotice(a).indexOf('baocao.docx') > -1, 'nêu tên file');
+        eq([text.writes, a.w.KFCOrders.fileSync.getState().linked, fsTitle(a)], [0, false, 'Lưu thành file orders.db (tự động)']);
+        assert(text.bytes.every(function (v, i) { return v === textBefore[i]; }), 'file bị đổi');
+        // SQLite của ứng dụng khác
+        var SQL = await a.w.initSqlJs({ locateFile: function (f) { return new URL('../js/vendor/' + f, location.href).href; } });
+        var d = new SQL.Database(); d.run('CREATE TABLE contacts (id INTEGER, name TEXT)'); var other = fakeHandle(d.export(), { name: 'danhba.db' }); d.close();
+        a.w.showSaveFilePicker = async function () { return other; };
+        fsBtn(a, 'Chọn nơi lưu').click();
+        assert(await waitFor(function () { return fsNotice(a).indexOf('của ứng dụng khác') > -1; }), 'thông báo: ' + fsNotice(a));
+        eq(other.writes, 0);
+      } finally { a.done(); }
+    });
+
+    test('Đóng hộp thoại chọn file thì im lặng; sau khi có file thì có thể "Đổi file" và "Ngừng tự động lưu"', async function () {
+      localStorage.clear();
+      var a = await load(SO); var f1 = fakeHandle(), f2 = fakeHandle({ }.x, { name: 'orders-moi.db' }), pick = 'abort';
+      try {
+        a.w.showSaveFilePicker = async function () { if (pick === 'abort') { var e = new Error('x'); e.name = 'AbortError'; throw e; } return pick === 'f1' ? f1 : f2; };
+        assert(await cartSuccess(a));
+        fsBtn(a, 'Chọn nơi lưu').click(); await wait(200);
+        eq([fsNotice(a), a.w.KFCOrders.fileSync.getState().linked], ['', false]);
+        pick = 'f1'; fsBtn(a, 'Chọn nơi lưu').click(); assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }));
+        eq([f1.writes, fsBtns(a)], [1, ['Đổi file', 'Ngừng tự động lưu']]);
+        pick = 'f2'; fsBtn(a, 'Đổi file').click(); assert(await waitFor(function () { return f2.writes === 1; }), 'ghi sang file mới');
+        assert(fsPanel(a).textContent.indexOf('orders-moi.db') > -1, 'hiện tên file mới');
+        var o = await addOrder(a, 'Khách mới', []); eq([f1.writes, f2.writes, o.file.status], [1, 2, 'written']);
+        fsBtn(a, 'Ngừng tự động lưu').click(); assert(await waitFor(function () { return fsTitle(a) === 'Lưu thành file orders.db (tự động)'; }));
+        assert(fsNotice(a).indexOf('Đã ngừng tự động ghi file') > -1 && fsNotice(a).indexOf('dữ liệu vẫn nằm trong trình duyệt') > -1, 'giải thích: ' + fsNotice(a));
+        var o2 = await addOrder(a, 'Khách nữa', []); eq([o2.file.status, f2.writes], ['not_linked', 2], 'không ghi nữa');
+      } finally { a.done(); }
+    });
+
+    test('Mất quyền ghi (ví dụ sau khi mở lại trình duyệt): đơn vẫn lưu an toàn, hiện nút "Cho phép ghi file"; bấm là ghi bù', async function () {
+      localStorage.clear();
+      var a = await load(SO); var f = fakeHandle();
+      try {
+        a.w.showSaveFilePicker = async function () { return f; };
+        assert(await cartSuccess(a)); fsBtn(a, 'Chọn nơi lưu').click(); assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }));
+        f.perm = 'prompt'; f.requestThrows = true; var w = f.writes;
+        var o = await addOrder(a, 'Trần Thị Bích', []);
+        eq([o.file.status, f.writes], ['needs_permission', w]);
+        eq((await a.w.KFCOrders.listOrders()).length, 2, 'đơn vẫn nằm trong trình duyệt');
+        assert(await waitFor(function () { return fsTitle(a) === 'Cần cho phép ghi vào file'; }), 'tiêu đề: ' + fsTitle(a));
+        assert(fsPanel(a).textContent.indexOf('Đơn hàng vẫn an toàn trong trình duyệt') > -1);
+        f.requestThrows = false; fsBtn(a, 'Cho phép ghi file').click();
+        assert(await waitFor(function () { return f.writes === w + 1; }), 'ghi bù sau khi cấp quyền');
+        eq((await a.w.KFCOrders.inspectDb(f.bytes)).orderCount, 2, 'file có đủ cả đơn đặt lúc chưa có quyền');
+        assert(await waitFor(function () { return fsTitle(a) === '✓ Đang tự động lưu vào file'; }));
+      } finally { a.done(); }
+    });
+
+    test('Ghi file lỗi không làm hỏng đơn: đơn vẫn lưu, khung báo lỗi và có nút "Thử lại"', async function () {
+      localStorage.clear();
+      var a = await load(SO); var f = fakeHandle(); var origWarn = a.w.console.warn; a.w.console.warn = function () {};
+      try {
+        a.w.showSaveFilePicker = async function () { return f; };
+        assert(await cartSuccess(a)); fsBtn(a, 'Chọn nơi lưu').click(); assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }));
+        var good = new Uint8Array(f.bytes); f.failWrite = true;
+        var o = await addOrder(a, 'Trần Thị Bích', []);
+        eq(o.file.status, 'error'); eq((await a.w.KFCOrders.listOrders()).length, 2, 'đơn vẫn được lưu');
+        assert(f.bytes.every(function (v, i) { return v === good[i]; }) && f.bytes.length === good.length, 'file giữ nguyên bản trước');
+        assert(await waitFor(function () { return fsTitle(a) === 'Chưa ghi được vào file'; }), 'tiêu đề: ' + fsTitle(a));
+        assert(fsPanel(a).querySelector('.fs-panel__text').textContent.indexOf('Đơn hàng vẫn an toàn trong trình duyệt') > -1);
+        f.failWrite = false; fsBtn(a, 'Thử lại').click();
+        assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }), 'ghi lại thành công');
+        eq((await a.w.KFCOrders.inspectDb(f.bytes)).orderCount, 2);
+      } finally { a.w.console.warn = origWarn; a.done(); }
+    });
+
+    test('Thanh toán: màn hình đặt hàng thành công cũng có khung ghi file; chọn file ở đó là ghi được ngay', async function () {
+      localStorage.clear();
+      var a = await load({ csv: FIXTURE, payment: true }); var f = fakeHandle();
+      try {
+        a.w.showSaveFilePicker = async function () { return f; };
+        await openCheckout(a, [0]);
+        assert(await placeVia(a, 'cod'));
+        assert(a.d.querySelector('.co-success .fs-panel'), 'có khung ghi file');
+        assert(a.d.querySelector('.co-saved').textContent.indexOf('đã được lưu tự động trong trình duyệt') > -1, 'câu giải thích đơn đã được lưu');
+        fsBtn(a, 'Chọn nơi lưu').click(); assert(await waitFor(function () { return a.d.querySelector('.fs-panel--ok'); }));
+        var info = await a.w.KFCOrders.inspectDb(f.bytes); eq([info.isOrdersDb, info.orderCount], [true, 1]);
+        eq((await queryFile(a, f.bytes, 'SELECT customer_name, payment_method FROM orders'))[0], ['Nguyễn Văn An', 'cod']);
+      } finally { a.done(); }
+    });
+
+    test('Trạng thái đơn hàng: danh sách đơn có khung ghi file; đổi trạng thái trong giao diện tự ghi vào file', async function () {
+      localStorage.clear();
+      var a = await load(SO); var f = fakeHandle();
+      try {
+        a.w.showSaveFilePicker = async function () { return f; };
+        var o = await addOrder(a, 'Nguyễn Văn An', []);
+        eq((await a.w.KFCOrders.fileSync.link()).status, 'written'); var w = f.writes;
+        await openOrders(a);
+        assert(a.d.querySelector('.orders-dialog .fs-panel--compact.fs-panel--ok'), 'khung gọn, đang tự lưu');
+        await openCard(a, o.id); actionBtn(a, 'sending').click(); assert(await waitStatus(a, 'sending'));
+        assert(f.writes > w, 'đổi trạng thái trên giao diện phải ghi vào file');
+        eq((await queryFile(a, f.bytes, 'SELECT status FROM orders'))[0][0], 'sending');
+      } finally { a.done(); }
+    });
+
+    test('Khôi phục liên kết sau khi tải lại trang: liên kết được nhớ (IndexedDB) và vẫn ghi được khi còn quyền', async function () {
+      localStorage.clear();
+      // handle thật (OPFS) mới nhớ được qua IndexedDB; môi trường không có OPFS thì bỏ qua phần này
+      if (!(navigator.storage && navigator.storage.getDirectory)) return;
+      var root = await navigator.storage.getDirectory(); var fh = await root.getFileHandle('kfc-test-orders.db', { create: true });
+      var a = await load(SO);
+      try {
+        a.w.showSaveFilePicker = async function () { return fh; };
+        await addOrder(a, 'Nguyễn Văn An', []);
+        eq((await a.w.KFCOrders.fileSync.link()).status, 'written');
+      } finally { a.done(); }
+      var b = await load({ csv: FIXTURE, status: true, keepData: true });
+      try {
+        await wait(400);
+        var st = b.w.KFCOrders.fileSync.getState();
+        eq([st.linked, st.fileName], [true, 'kfc-test-orders.db']);
+        var o = await addOrder(b, 'Trần Thị Bích', []); eq(o.file.status, 'written');
+        var bytes = new Uint8Array(await (await fh.getFile()).arrayBuffer());
+        eq((await b.w.KFCOrders.inspectDb(bytes)).orderCount, 2, 'file thật có đủ 2 đơn');
+      } finally {
+        b.done();
+        await new Promise(function (res) { var r = indexedDB.deleteDatabase('kfc-orders-file'); r.onsuccess = r.onerror = r.onblocked = function () { res(); }; });
+        try { await root.removeEntry('kfc-test-orders.db'); } catch (e) { /* bỏ qua */ }
+      }
     });
 
     // ---------- Xử lý lỗi (IMPLEMENTATION.md: CSV không tồn tại / rỗng / sai format / ảnh không tồn tại) ----------

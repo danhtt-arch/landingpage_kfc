@@ -35,7 +35,7 @@ Chưa gửi ──► Đang gửi ──► Đã gửi thành công   (kết th�
 | 5 | Chuyển trạng thái | **Bắt đầu gửi hàng** (1 bước); **Xác nhận đã gửi thành công** và **Hủy đơn** có bước xác nhận vì không hoàn tác được |
 | 6 | Hủy đơn | Bắt buộc chọn Tai nạn hoặc Hư hỏng, ghi chú tùy chọn (≤ 200 ký tự); lý do và ghi chú hiện trên dòng thời gian |
 | 7 | Chống xung đột | Nếu trạng thái đã đổi ở nơi khác (tab khác), cảnh báo, cập nhật hiển thị và không ghi đè |
-| 8 | Lịch sử | Mỗi lần đổi được ghi vào `order_status_history` (từ đâu, sang đâu, lý do, ghi chú, thời điểm) |
+| 8 | Lịch sử | Mỗi lần đổi được ghi vào cột JSON `orders.status_log` (từ đâu, sang đâu, lý do, ghi chú, thời điểm) |
 | 9 | Trạng thái giao diện | Đang tải, trống, lỗi (có Thử lại), đang cập nhật (khóa nút), thông báo thành công/cảnh báo |
 
 > Website demo không có đăng nhập, nên bất kỳ ai dùng chung trình duyệt đều xem và cập nhật được. Màn hình có ghi chú nói rõ điều này. Phân quyền (khách chỉ xem, cửa hàng mới được đổi) cần backend và thuộc phạm vi sau.
@@ -44,9 +44,10 @@ Chưa gửi ──► Đang gửi ──► Đã gửi thành công   (kết th�
 
 | Thành phần dùng lại | Nguồn | Cách module Trạng Thái dùng |
 |---|---|---|
-| Bảng `orders`, `order_items` và đơn đã lưu | Giỏ hàng (`order-service.js`) | Đọc đơn để hiển thị; thêm cột trạng thái vào `orders` |
+| Bảng `orders`, `order_items` và đơn đã lưu | Giỏ hàng (`order-service.js`) | Đọc đơn để hiển thị; thêm cột trạng thái vào `orders` (không thêm bảng) |
 | Các cột khách/thanh toán (`customer_*`, `payment_*`) | Thanh toán (migration trong `order-service.js`) | Hiển thị thông tin giao hàng và thanh toán ở trang chi tiết |
 | `KFCOrders.listOrders()` | `orders-boot.js` | Danh sách đơn |
+| Khung "Lưu thành file orders.db" (`KFCFileSyncUI`) và tự ghi file sau mỗi lần đổi trạng thái | `file-sync-ui.js`, `orders-boot.js` | Hiện ở đầu danh sách đơn; mọi lần đổi trạng thái tự ghi vào file đã liên kết |
 | Khóa ghi, nơi lưu `orders.db` (IndexedDB), nạp sql.js lười | `orders-boot.js`, `db-storage.js` | Mọi lần đổi trạng thái ghi trong cùng khóa, không đè dữ liệu của tab khác |
 | `KFCCartStore.formatVND` | `cart-store.js` | Định dạng tiền |
 | `KFCPricing` | `pricing.js` | (Qua `order-service`) tính tiền của đơn |
@@ -66,19 +67,20 @@ Thêm vào bảng `orders` (tự thêm bằng `ALTER TABLE` nếu còn thiếu, 
 | `cancel_reason` | `NULL` hoặc `accident` / `damaged` (`CHECK`) |
 | `status_updated_at` | Thời điểm đổi gần nhất (ISO 8601 UTC); đơn mới = `created_at` |
 
-Bảng mới `order_status_history` (mỗi lần đổi một dòng; **đơn mới chưa có dòng nào**, bước đầu "Chưa gửi" lấy từ `created_at`):
+| `status_log` | **Nhật ký đổi trạng thái dạng JSON** (mảng các lần đổi), `CHECK (json_valid(...))`. Đơn mới là `NULL` (chưa đổi lần nào; bước đầu "Chưa gửi" lấy từ `created_at`) |
 
-```sql
-CREATE TABLE order_status_history (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  order_id    INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  from_status TEXT,
-  to_status   TEXT NOT NULL CHECK (to_status IN ('not_sent','sending','delivered','cancelled')),
-  reason      TEXT,
-  note        TEXT,
-  changed_at  TEXT NOT NULL
-);
+`orders.db` vẫn chỉ có **đúng 2 bảng: `orders` và `order_items`**. Nhật ký trạng thái nằm trong cột `status_log` của chính dòng đơn nên không cần bảng thứ 3. Mỗi phần tử có dạng:
+
+```json
+[
+  { "from_status": "not_sent", "to_status": "sending", "reason": null, "note": "", "changed_at": "2026-10-03T07:10:00.000Z" },
+  { "from_status": "sending", "to_status": "cancelled", "reason": "accident", "note": "Xe va chạm", "changed_at": "2026-10-03T07:30:00.000Z" }
+]
 ```
+
+Trạng thái và nhật ký luôn đổi **cùng một câu `UPDATE`** nên không bao giờ lệch nhau. Truy vấn nhật ký bằng SQLite: `SELECT json_extract(status_log, '$[#-1].to_status') FROM orders`.
+
+> Phiên bản đầu của module này dùng một bảng thứ 3 `order_status_history`. Vì yêu cầu là `orders.db` chỉ có 2 bảng, bảng đó đã bị bỏ: khi mở một `orders.db` cũ có bảng này, dữ liệu được chuyển vào `status_log` rồi bảng bị xóa (có test).
 
 ### Quy tắc được ép ngay trong SQLite (3 trigger)
 
@@ -99,7 +101,7 @@ KFCOrders.updateOrderStatus({ orderId, to, expectedFrom, reason, note })
   3. đơn không tồn tại -> order_not_found
   4. expectedFrom lệch trạng thái hiện tại -> status_conflict (kèm trạng thái hiện tại)
   5. kiểm tra quy tắc (validateChange): chuyển hợp lệ, lý do hủy, ghi chú
-  6. BEGIN -> UPDATE orders -> INSERT order_status_history -> COMMIT (lỗi thì ROLLBACK)
+  6. BEGIN -> UPDATE orders (status, cancel_reason, status_updated_at, status_log cùng lúc) -> COMMIT (lỗi thì ROLLBACK)
   7. lưu lại tệp (lưu không được thì báo lỗi, dữ liệu cũ nguyên vẹn)
 ```
 
@@ -120,7 +122,7 @@ Mã lỗi: `order_not_found`, `invalid_status`, `invalid_transition`, `cancel_re
 
 ```text
 js/orders/order-status.js          Quy tắc trạng thái (logic thuần, dùng chung cho DB và giao diện)
-js/orders/order-service.js         (mở rộng) cột, bảng lịch sử, trigger, updateOrderStatus, getOrder
+js/orders/order-service.js         (mở rộng) cột trạng thái + status_log, trigger, updateOrderStatus, getOrder
 js/order-status/order-status-ui.js Hộp thoại: danh sách, lọc, chi tiết, dòng thời gian, hành động
 css/order-status.css               Giao diện (dùng token trong style.css)
 tests/order-status.test.js, tests/order-status-service.test.js, tests/ui.html (phần Trạng thái đơn hàng)
@@ -138,26 +140,26 @@ Gỡ `js/order-status/order-status-ui.js` thì nút **Đơn hàng** không hiệ
 ## 9. Chạy test
 
 ```bash
-node tests/run.js        # 391 test (gồm trạng thái đơn hàng trên SQLite thật)
+node tests/run.js        # 430 test (gồm trạng thái đơn hàng trên SQLite thật)
 ```
 
 Trong trình duyệt (qua Live Server hoặc `python -m http.server`):
 
 - `tests/index.html`: 231 test logic (gồm toàn bộ quy tắc trạng thái).
-- `tests/ui.html`: 97 test giao diện (gồm 27 test của module này).
+- `tests/ui.html`: 107 test giao diện (gồm 27 test của module này).
 
 **Quy tắc** (`order-status.test.js`): đủ 4 nhãn tiếng Việt; **toàn bộ ma trận 4×4** các cặp chuyển trạng thái; `allowedNext`/`isFinal` (và trả bản sao); `validateChange` (hủy bắt buộc lý do Tai nạn/Hư hỏng, lý do sai hoặc kiểu lạ, không được kèm lý do khi không hủy, đi lùi/nhảy cóc/đứng yên, đơn đã kết thúc, ghi chú sai/quá dài/ký tự ẩn, `__proto__`); `buildTimeline` cho cả 4 trạng thái và dữ liệu thiếu.
 
 **Dịch vụ trên SQLite thật** (`order-status-service.test.js`):
 - Đơn mới luôn là Chưa gửi; luồng đầy đủ (lưu trạng thái, thời điểm, lịch sử); hủy với từng lý do; đổi trạng thái không đụng dữ liệu đơn; nhiều đơn độc lập.
-- Mọi chuyển trạng thái sai bị chặn **mà tệp không đổi một byte**; đơn đã kết thúc không đổi được; thiếu/sai lý do hủy; ghi chú sai; mã đơn sai; `status_conflict`; lưu tệp thất bại (thử lại được); `orders.db` hỏng; ghi giữa chừng lỗi (ROLLBACK, không để lại lịch sử).
-- **Bảo vệ ngay trong SQLite**: ghi SQL trực tiếp để nhảy cóc, đi lùi, sửa đơn đã kết thúc, hủy không lý do, giá trị lạ, tạo đơn với trạng thái khác "Chưa gửi" đều bị chặn; xóa đơn kéo theo xóa lịch sử; **trigger khớp 100% với ma trận của `order-status.js`**.
+- Mọi chuyển trạng thái sai bị chặn **mà tệp không đổi một byte**; đơn đã kết thúc không đổi được; thiếu/sai lý do hủy; ghi chú sai; mã đơn sai; `status_conflict`; lưu tệp thất bại (thử lại được); `orders.db` hỏng; ghi lỗi (trigger chặn): không đổi gì, trạng thái và nhật ký luôn đi cùng nhau.
+- **Bảo vệ ngay trong SQLite**: ghi SQL trực tiếp để nhảy cóc, đi lùi, sửa đơn đã kết thúc, hủy không lý do, giá trị lạ, tạo đơn với trạng thái khác "Chưa gửi" đều bị chặn; `status_log` chỉ nhận JSON hợp lệ; xóa đơn kéo theo xóa nhật ký (cùng một dòng); luôn đúng 2 bảng; **trigger khớp 100% với ma trận của `order-status.js`**.
 - Đồng thời: 5 yêu cầu cùng lúc chỉ 1 thắng; "giao thành công" và "hủy" tranh nhau chỉ một thắng và trạng thái khớp lịch sử; hai tab dùng chung khóa; đặt đơn mới trong lúc đổi trạng thái; một yêu cầu lỗi không làm kẹt hàng đợi.
-- Nâng cấp từ `orders.db` của module Giỏ hàng và Thanh toán (đơn cũ thành Chưa gửi, chạy lặp lại không nhân đôi, chỉ đọc không ghi, toàn vẹn `status` khớp lịch sử).
+- Nâng cấp từ `orders.db` của module Giỏ hàng và Thanh toán (đơn cũ thành Chưa gửi, chạy lặp lại không nhân đôi, chỉ đọc không ghi, toàn vẹn `status` khớp bản ghi cuối của `status_log`), và **từ bản trước có bảng thứ 3 `order_status_history`** (chuyển vào `status_log`, xóa bảng, còn đúng 2 bảng).
 
 **Giao diện** (`tests/ui.html`): nút Đơn hàng, mở/đóng, danh sách (thứ tự, nội dung, nhãn 4 trạng thái), bộ lọc, trạng thái trống, chi tiết và tiến trình cho cả 4 trạng thái, vòng đời đầy đủ (kèm DB, lịch sử, sự kiện), hủy (bắt buộc lý do, từng lý do, ghi chú, từ cả hai trạng thái), quay lại ở bước xác nhận, ghi chú quá dài, đơn đã kết thúc, **xung đột giữa các tab**, trạng thái đang cập nhật (khóa nút, không đóng được), 5 loại lỗi + đơn không tồn tại, không tải được WebAssembly, XSS, đơn không có thông tin khách, 40 đơn, giữ trạng thái sau khi đóng/mở và tải lại trang, tích hợp với Thanh toán, chạy độc lập khi gỡ module, responsive 1440/1024/768/390/375px, tuân thủ DESIGN.md (kể cả tương phản), bàn phím.
 
-Đã kiểm tra độc lập bộ test bằng cách cố ý làm hỏng code: bỏ trigger chặn chuyển trạng thái, bỏ kiểm tra xung đột, cho phép hủy không lý do, cho đơn đã giao quay lại Đang gửi, không ghi lịch sử, và (ở giao diện) bỏ kiểm tra xung đột và bỏ bắt buộc lý do. Mọi lần đều có test báo lỗi.
+Đã kiểm tra độc lập bộ test bằng cách cố ý làm hỏng code: bỏ trigger chặn chuyển trạng thái, bỏ kiểm tra xung đột, cho phép hủy không lý do, cho đơn đã giao quay lại Đang gửi, không ghi nhật ký, và (ở giao diện) bỏ kiểm tra xung đột và bỏ bắt buộc lý do. Mọi lần đều có test báo lỗi.
 
 ## 10. Giới hạn đã biết
 

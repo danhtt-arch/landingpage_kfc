@@ -19,6 +19,7 @@ landingpage_kfc/
 ├── css/
 │   ├── style.css       # Design System & Responsive Stylesheet
 │   ├── cart.css        # Giao diện module Giỏ hàng
+│   ├── file-sync.css   # Khung lưu orders.db ra file
 │   ├── payment.css     # Giao diện module Thanh toán
 │   └── order-status.css # Giao diện module Trạng thái đơn hàng
 ├── js/
@@ -32,6 +33,8 @@ landingpage_kfc/
 │   │   ├── order-status.js     # Module 3: quy tắc trạng thái đơn hàng
 │   │   ├── order-service.js
 │   │   ├── db-storage.js
+│   │   ├── file-sync.js        # Tự ghi orders.db ra file thật (File System Access API)
+│   │   ├── file-sync-ui.js     # Khung "Lưu thành file orders.db"
 │   │   └── orders-boot.js
 │   ├── order-status/       # Module 3: trạng thái đơn hàng
 │   │   └── order-status-ui.js

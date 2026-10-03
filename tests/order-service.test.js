@@ -150,14 +150,14 @@
 
   // ======================================================================
   group('cấu trúc orders.db', function () {
-    test('có đúng các bảng orders, order_items (+ order_status_history của module 3) và index, đủ cột', async function () {
+    test('orders.db có ĐÚNG 2 bảng: orders và order_items (+ index), đủ cột', async function () {
       var st = memStorage(); var svc = makeService(st);
       await svc.placeOrder(cartOf([[CHICKEN]]));
       var db = await openBytes(st.bytes);
       var tables = q(db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map(function (r) { return r.name; });
-      eq(tables, ['order_items', 'order_status_history', 'orders']);
+      eq(tables, ['order_items', 'orders']);
       eq(q(db, 'PRAGMA table_info(orders)').map(function (c) { return c.name; }), ['id', 'order_code', 'created_at', 'total_qty', 'subtotal', 'discount_total', 'total',
-        'customer_name', 'customer_phone', 'customer_address', 'customer_note', 'payment_method', 'payment_status', 'status', 'cancel_reason', 'status_updated_at']);
+        'customer_name', 'customer_phone', 'customer_address', 'customer_note', 'payment_method', 'payment_status', 'status', 'cancel_reason', 'status_updated_at', 'status_log']);
       eq(q(db, 'PRAGMA table_info(order_items)').map(function (c) { return c.name; }), ['id', 'order_id', 'product_id', 'product_name', 'category', 'original_price', 'discount_percent', 'unit_price', 'quantity', 'line_total']);
       eq(q(db, "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_order_items_order_id'").length, 1);
       db.close();

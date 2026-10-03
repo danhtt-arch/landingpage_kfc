@@ -59,8 +59,10 @@ js/pricing.js           Tính giá sau giảm (dùng chung cho thẻ sản phẩ
 js/cart/cart-store.js   Logic thuần (thêm/sửa/xóa, tổng tiền, lưu trữ, reconcile). Không đụng DOM
 js/cart/cart-ui.js      Drawer, badge, toast, focus, sự kiện, màn hình đặt hàng thành công
 js/orders/order-service.js  Kiểm tra đơn + ghi SQLite trong transaction (không đụng DOM)
-js/orders/db-storage.js     Nơi giữ nội dung orders.db trong trình duyệt (IndexedDB, dự phòng bộ nhớ)
-js/orders/orders-boot.js    Nạp sql.js khi cần, khóa giữa các tab, nút lưu file; tạo window.KFCOrders
+js/orders/db-storage.js     Nơi giữ nội dung orders.db trong trình duyệt (IndexedDB, dự phòng bộ nhớ) + nơi nhớ liên kết file
+js/orders/file-sync.js      Tự động ghi orders.db ra file thật (File System Access API): liên kết, hỏi khi file đã có đơn, quyền ghi, lỗi
+js/orders/file-sync-ui.js   Khung giao diện "Lưu thành file orders.db" dùng chung cho các màn hình
+js/orders/orders-boot.js    Nạp sql.js khi cần, khóa giữa các tab, tự ghi file sau mỗi thay đổi; tạo window.KFCOrders
 js/vendor/              sql.js 1.14.2 (SQLite/WebAssembly), xem js/vendor/README.md
 css/cart.css            Giao diện (dùng token trong style.css)
 tests/                  Test (harness.js, pricing / cart-store / discount-store / csv-and-menu / order-service / order-db, run.js, index.html, ui.html)
@@ -76,13 +78,13 @@ tests/                  Test (harness.js, pricing / cart-store / discount-store 
 ## 6. Chạy test
 
 ```bash
-node tests/run.js        # 391 test (giá, giảm giá, logic giỏ, CSV, dữ liệu menu, lưu đơn bằng SQLite thật, thanh toán, trạng thái đơn hàng)
+node tests/run.js        # 430 test (giá, giảm giá, logic giỏ, CSV, dữ liệu menu, lưu đơn bằng SQLite thật, thanh toán, trạng thái đơn hàng)
 ```
 
 Chạy trong trình duyệt (qua Live Server hoặc `python -m http.server`, không mở bằng file://):
 
 - `tests/index.html`: 231 test logic.
-- `tests/ui.html`: 97 test giao diện (gồm luồng đặt hàng với SQLite và IndexedDB thật). Các test của Giỏ hàng chạy với module Thanh toán bị gỡ ra để kiểm tra độc lập; phần Thanh toán xem `docs/MODULE-02-PAYMENT.md`. Trang nạp `index.html` trong iframe và thao tác như người dùng.
+- `tests/ui.html`: 107 test giao diện (gồm luồng đặt hàng với SQLite và IndexedDB thật). Các test của Giỏ hàng chạy với module Thanh toán bị gỡ ra để kiểm tra độc lập; phần Thanh toán xem `docs/MODULE-02-PAYMENT.md`. Trang nạp `index.html` trong iframe và thao tác như người dùng.
 
 Phạm vi test:
 
@@ -117,27 +119,53 @@ Các test về giá dùng dữ liệu cố định riêng, nên không hỏng kh
 
 ## 7. Lưu đơn hàng vào SQLite (orders.db)
 
-### Cách hoạt động
+Yêu cầu: sau khi đặt hàng thành công, dữ liệu được lưu dưới dạng SQLite, trong **file `orders.db` có đúng 2 bảng: `orders` và `order_items`**.
+
+### Dữ liệu nằm ở đâu: hai nơi
+
+| | Là gì | Khi nào được cập nhật |
+|---|---|---|
+| **Cơ sở dữ liệu trong trình duyệt** (IndexedDB) | Bản chính. Có ngay khi đặt hàng thành công, không cần làm gì thêm | Mỗi đơn mới, mỗi lần đổi trạng thái |
+| **File `orders.db` thật trên máy** | Bản sao dưới dạng file SQLite, mở được bằng DB Browser for SQLite, `sqlite3`, Python... | **Tự động** sau mỗi đơn mới và mỗi lần đổi trạng thái, **sau khi bạn chọn file một lần** |
+
+Vì sao phải chọn file một lần? Trình duyệt không cho trang web tự tạo hay ghi file lên ổ đĩa nếu người dùng chưa cho phép. Cách duy nhất không cần backend là **File System Access API** (Chrome, Edge): bạn chọn nơi lưu `orders.db` một lần, trình duyệt trao cho trang quyền ghi vào đúng file đó, và từ đó mỗi thay đổi tự được ghi vào file. Trình duyệt khác (Firefox, Safari) chưa hỗ trợ API này nên chỉ có nút tải về một bản sao.
+
+### Cách dùng
+
+1. Đặt hàng như bình thường. Màn hình thành công có khung **"Lưu thành file orders.db (tự động)"**.
+2. Bấm **Chọn nơi lưu file orders.db**, chọn thư mục (ví dụ `landingpage_kfc/data/`) và tên `orders.db`.
+3. Xong. Khung chuyển thành **"✓ Đang tự động lưu vào file"**. Từ giờ mỗi đơn mới và mỗi lần đổi trạng thái tự ghi vào file này.
+
+Các tình huống:
+
+| Tình huống | Hành vi |
+|---|---|
+| Chọn file mới/trống | Ghi ngay toàn bộ dữ liệu hiện có |
+| **Chọn file đã có đơn hàng** | Không ghi đè âm thầm. Hỏi: **Dùng dữ liệu trong file** (thay dữ liệu trình duyệt bằng dữ liệu của file), **Ghi đè file** (cảnh báo rõ file sẽ mất đơn cũ), hoặc **Hủy** |
+| Chọn file không phải SQLite, hoặc SQLite của ứng dụng khác | Từ chối, báo lý do, **không đụng vào file đó** |
+| Mở lại trình duyệt | Liên kết được nhớ. Chrome có thể yêu cầu cho phép ghi lại một lần: khung hiện nút **Cho phép ghi file** |
+| Không ghi được file (hết quyền, file bị xóa, ổ đĩa lỗi) | Đơn hàng vẫn lưu an toàn trong trình duyệt; khung báo lỗi, có nút **Thử lại** |
+| Muốn đổi/ngừng | **Đổi file**, **Ngừng tự động lưu** |
+| Trình duyệt không hỗ trợ | Khung giải thích và có nút **Tải về bản sao orders.db** |
+
+Nút **Chỉ tải về một bản sao** lưu một lần, không liên kết, không tự cập nhật.
+
+### Luồng đặt đơn
 
 ```text
 Bấm "Đặt hàng"
    -> phát cart:checkout (module Thanh Toán có thể chặn)
-   -> KFCOrders.placeOrder(giỏ)
+   -> KFCOrders.placeOrder(giỏ, meta)
         1. kiểm tra giỏ và tính lại tiền từ từng dòng (sai thì dừng, chưa chạm DB)
         2. [khóa giữa các tab] đọc orders.db mới nhất từ IndexedDB
         3. BEGIN -> INSERT orders -> INSERT order_items -> COMMIT (lỗi thì ROLLBACK)
-        4. lưu lại orders.db vào IndexedDB
+        4. lưu lại vào IndexedDB
+        5. nếu đã chọn file: ghi toàn bộ DB ra file (lỗi ghi file không làm hỏng đơn)
    -> thành công: xóa giỏ, hiện mã đơn, phát order:placed
    -> thất bại: giữ nguyên giỏ, báo nguyên nhân
 ```
 
-Trình duyệt không cho trang web tự ghi file ra ổ đĩa, nên bản "chính" của `orders.db` nằm trong **IndexedDB** của trình duyệt.
-Muốn có tệp thật, bấm **Lưu file orders.db** trên màn hình đặt hàng thành công: Chrome/Edge mở hộp thoại "Lưu thành…", trình duyệt khác tải tệp về.
-Tệp này là SQLite chuẩn, mở được bằng DB Browser for SQLite, `sqlite3`, Python `sqlite3`…
-
-### Cấu trúc bảng
-
-> Các module sau mở rộng `orders.db` bằng migration tự động: module Thanh Toán thêm 6 cột nullable vào `orders` (`customer_*`, `payment_*`, xem `docs/MODULE-02-PAYMENT.md`); module Trạng Thái Đơn Hàng thêm `status`, `cancel_reason`, `status_updated_at` và bảng `order_status_history` (xem `docs/MODULE-03-ORDER-STATUS.md`). Bảng dưới đây là phần của module Giỏ hàng.
+### Cấu trúc: đúng 2 bảng
 
 ```sql
 CREATE TABLE orders (
@@ -148,6 +176,7 @@ CREATE TABLE orders (
   subtotal       INTEGER NOT NULL CHECK (subtotal >= 0),        -- theo giá gốc
   discount_total INTEGER NOT NULL CHECK (discount_total >= 0),  -- tổng tiền được giảm
   total          INTEGER NOT NULL CHECK (total >= 0)            -- khách phải trả
+  -- + các cột do module sau thêm vào: customer_*, payment_*, status, cancel_reason, status_updated_at, status_log
 );
 
 CREATE TABLE order_items (
@@ -165,8 +194,9 @@ CREATE TABLE order_items (
 CREATE INDEX idx_order_items_order_id ON order_items(order_id);
 ```
 
-Tên, giá và % giảm được **chụp lại** vào từng dòng đơn, nên sửa `menu.csv` sau này không làm đổi đơn cũ.
-Tiền là số nguyên đồng. `menu.csv` phải để `price` là số nguyên, nếu không đơn sẽ bị từ chối.
+> **Luôn chỉ có 2 bảng.** Các module sau chỉ thêm **cột** vào `orders` (khách, thanh toán, trạng thái, nhật ký trạng thái dạng JSON), không thêm bảng. Phiên bản trước từng có bảng thứ 3 `order_status_history`; `orders.db` cũ được chuyển dữ liệu đó vào cột `orders.status_log` rồi xóa bảng khi mở.
+
+Tên, giá và % giảm được **chụp lại** vào từng dòng đơn, nên sửa `menu.csv` sau này không làm đổi đơn cũ. Tiền là số nguyên đồng; `menu.csv` phải để `price` là số nguyên, nếu không đơn sẽ bị từ chối.
 
 Ví dụ truy vấn:
 
@@ -182,16 +212,19 @@ GROUP BY o.id ORDER BY o.id DESC;
 
 ### Đảm bảo an toàn dữ liệu
 
-- Chỉ báo thành công khi đã lưu xong; giỏ chỉ bị xóa sau đó.
+- Chỉ báo thành công khi đã lưu xong vào cơ sở dữ liệu trình duyệt; giỏ chỉ bị xóa sau đó.
 - Ghi trong transaction: lỗi giữa chừng thì ROLLBACK, không có đơn "nửa vời".
 - Không bao giờ ghi đè một `orders.db` đã có mà không đọc được (hỏng hoặc sai cấu trúc): báo lỗi và giữ nguyên dữ liệu cũ.
+- Ghi ra file đi qua `createWritable` (trình duyệt ghi vào tệp tạm rồi mới thay thế), lỗi giữa chừng không làm hỏng file cũ; các lần ghi chạy tuần tự, không chồng nhau.
+- Không ghi vào file khác (không phải SQLite/orders.db) và không ghi đè file đã có đơn khi chưa được bạn chọn rõ.
 - Mọi lần ghi chạy trong một khóa (Web Locks) và đọc DB mới nhất ngay trước khi ghi, nên hai tab đặt hàng cùng lúc không đè dữ liệu của nhau.
 - Câu lệnh SQL dùng tham số (`?`), không ghép chuỗi, nên tên món chứa ký tự đặc biệt hay câu SQL vẫn an toàn.
 
 ### Điều kiện chạy
 
 - Cần chạy qua http (Live Server hoặc `python -m http.server`) vì WebAssembly không nạp được khi mở bằng `file://`. Khi đó trang báo rõ và giữ nguyên giỏ.
-- Nếu IndexedDB bị chặn (ví dụ một số chế độ riêng tư), đơn vẫn đặt được nhưng chỉ lưu tạm trong phiên; màn hình thành công cảnh báo và nhắc bấm **Lưu file orders.db**.
+- Tự ghi file cần **Chrome hoặc Edge** (File System Access API). Trình duyệt khác vẫn lưu trong trình duyệt và có nút tải bản sao.
+- Nếu IndexedDB bị chặn (ví dụ một số chế độ riêng tư), đơn vẫn đặt được nhưng chỉ lưu tạm trong phiên; màn hình thành công cảnh báo và nhắc lưu ra file.
 - Thư viện: sql.js (MIT), xem `js/vendor/README.md`. Đây là thư viện chạy trong trình duyệt, không phải backend hay database server.
 
 ## 8. Quy ước giảm giá
